@@ -1,0 +1,39 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# ---- 虚拟环境 / 包管理 ----
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+.eggs/
+
+# ---- 构建产物 ----
+build/
+dist/
+*.spec
+
+# ---- IDE / 编辑器 ----
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ---- 日志 ----
+*.log
+
+# ---- 本地数据 / 授权文件（用户级数据，不入库）----
+.ZhiBoDouData/
+license.lic
+phone_cfg.json
+
+# ---- WorkBuddy 项目数据（不要入库）----
+.workbuddy/
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
