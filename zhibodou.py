@@ -12,7 +12,7 @@ import uuid
 import hashlib
 import base64
 from collections import deque
-from PyQt5.QtCore import Qt, QTimer, QMutex, QMutexLocker, pyqtSignal, QObject
+from PyQt5.QtCore import Qt, QTimer, QMutex, QMutexLocker, pyqtSignal, QObject, QThread
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QPushButton, QStackedWidget, QSlider, QCheckBox,
@@ -59,7 +59,7 @@ HOST_MODE = "rtmp"
 #   如果 mediamtx.yml 里给路径设了 publishUser/publishPass 发布鉴权，
 #   请把账号密码填到 RTMP_PUBLISH_USER / RTMP_PUBLISH_PASS。
 # ============================================================
-RTMP_SERVER_IP = "127.0.0.1"
+RTMP_SERVER_IP = "125.122.155.133"
 RTMP_PORT = 1935
 RTMP_APP = "live"
 RTMP_STREAM_KEY = "zhibodou"
@@ -771,6 +771,26 @@ class AudioHost(QObject):
 # ============================================================
 # 主播流处理类
 # ============================================================
+# 分辨率探测结果缓存：避免每次重建 UI / 启动时都重新打开摄像头探测
+_RES_CACHE = None
+
+def get_cached_resolutions():
+    """返回分辨率下拉框用的列表：优先返回已探测缓存，否则返回常见静态列表（不触碰摄像头）。"""
+    if _RES_CACHE is not None:
+        return _RES_CACHE
+    # 静态兜底，保证界面在探测完成前即可用，且不占用摄像头
+    return [(1280, 720), (960, 540), (854, 480), (640, 480),
+            (640, 360), (320, 240), (720, 1280), (480, 854), (360, 640)]
+
+class ResProbeThread(QThread):
+    """后台探测摄像头真实支持的分辨率，避免在主线程/启动时同步打开摄像头。"""
+    done = pyqtSignal(list)
+    def run(self):
+        global _RES_CACHE
+        res = enumerate_camera_resolutions()
+        _RES_CACHE = res
+        self.done.emit(res)
+
 def enumerate_camera_resolutions():
     """探测默认摄像头硬件支持的分辨率，返回 [(w, h), ...]（横屏在前、同组内按面积降序）。"""
     candidates = [
@@ -1481,6 +1501,38 @@ class MainWin(QMainWindow):
         w, h = self.res_combo.itemData(idx)
         self.host_stream.set_capture_resolution(w, h)
 
+    def _on_res_probed(self, res):
+        """分辨率后台探测完成：用真实支持的分辨率刷新下拉框（不影响正在进行的推流）。"""
+        if not res or not hasattr(self, "res_combo") or self.res_combo is None:
+            return
+        cur = self.res_combo.currentData()
+        self.res_combo.blockSignals(True)
+        self.res_combo.clear()
+        for (w, h) in res:
+            orient = "竖屏" if h > w else "横屏"
+            self.res_combo.addItem(f"{w}x{h} ({orient})", (w, h))
+        idx = 0
+        if cur in res:
+            idx = res.index(cur)
+        else:
+            for _pref in [(720, 1280), (1280, 720)]:
+                if _pref in res:
+                    idx = res.index(_pref)
+                    break
+        self.res_combo.setCurrentIndex(idx)
+        self.res_combo.blockSignals(False)
+        # 仅当尚未开始推流时同步默认采集分辨率；推流中不打断摄像头
+        if not self.timer.isActive():
+            w, h = res[idx]
+            self.host_stream.capture_w = w
+            self.host_stream.capture_h = h
+
+    def _wait_res_probe(self):
+        """等待后台分辨率探测线程结束，避免探测占着摄像头时与采集抢设备导致无预览。"""
+        t = getattr(self, "_res_probe", None)
+        if t is not None and t.isRunning():
+            t.wait(4000)
+
     def copy_machine_code(self):
         mc = get_machine_code()
         QApplication.clipboard().setText(mc)
@@ -1626,7 +1678,8 @@ class MainWin(QMainWindow):
 
         left_lay.addWidget(QLabel("视频分辨率"))
         self.res_combo = QComboBox()
-        self._supported_res = enumerate_camera_resolutions()
+        # 先用静态列表填充，保证界面立即可用且不占用摄像头（避免启动时闪烁/卡顿）
+        self._supported_res = get_cached_resolutions()
         for (w, h) in self._supported_res:
             orient = "竖屏" if h > w else "横屏"
             self.res_combo.addItem(f"{w}x{h} ({orient})", (w, h))
@@ -1641,10 +1694,17 @@ class MainWin(QMainWindow):
         self.res_combo.currentIndexChanged.connect(self.on_res_change)
         left_lay.addWidget(self.res_combo)
 
-        # 让 HostStream 的采集分辨率与默认选项保持同步
+        # 让 HostStream 的采集分辨率与默认选项保持同步（此时摄像头尚未打开，仅记录）
         _dw, _dh = self._supported_res[_default_idx]
         self.host_stream.capture_w = _dw
         self.host_stream.capture_h = _dh
+
+        # 后台异步探测摄像头真实支持的分辨率，完成后通过信号更新下拉框；
+        # 这样启动/构建 UI 时不会在主线程同步打开摄像头，消除闪烁与卡顿
+        self._res_probe = ResProbeThread()
+        self._res_probe.done.connect(self._on_res_probed)
+        self._res_probe.finished.connect(self._res_probe.deleteLater)
+        self._res_probe.start()
 
         left_lay.addWidget(QLabel("抖音直播间链接 (全局推流)"))
         self.host_live_input = QLineEdit()
@@ -1918,6 +1978,7 @@ class MainWin(QMainWindow):
         ok = self.host_stream.set_live_source(url)
         if ok:
             if not self.timer.isActive():
+                self._wait_res_probe()
                 if not self.host_stream.init_camera_only():
                     QMessageBox.critical(self, "错误", "启动直播源失败！")
                     return
@@ -1933,6 +1994,7 @@ class MainWin(QMainWindow):
     def on_host_switch_cam(self):
         self.host_stream.set_cam_source()
         if not self.timer.isActive():
+            self._wait_res_probe()
             self.host_stream.init_camera_only()
         QMessageBox.information(self, "切换", "已切回摄像头采集")
 
@@ -1969,6 +2031,7 @@ class MainWin(QMainWindow):
             return
         if not self.timer.isActive():
             print("[主界面] 初始化摄像头/直播源...")
+            self._wait_res_probe()
             if not self.host_stream.init_camera_only():
                 QMessageBox.critical(self, "错误", "摄像头或直播源启动失败，请检查设备！")
                 return
