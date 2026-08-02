@@ -384,23 +384,37 @@ def beauty_process(frame, bright=50, contrast=50, sat=50, sharp=50):
 #       若环境没有 PyAV，则回退到 ffmpeg（由 ffmpeg 直接采集设备并推流）。
 # ============================================================
 def find_ffmpeg():
-    """查找可用的 ffmpeg 可执行文件：优先系统 PATH，其次脚本/工作目录下的本地 ffmpeg(.exe)，最后 imageio-ffmpeg 自带二进制。"""
+    """查找可用的 ffmpeg 可执行文件：
+       1) 系统 PATH
+       2) 打包后 exe 同目录 / PyInstaller 临时目录(sys._MEIPASS)
+       3) 脚本/工作目录下的本地 ffmpeg(.exe)
+       4) imageio-ffmpeg 自带二进制
+    """
+    # 1) 系统 PATH
     try:
         p = shutil.which("ffmpeg")
         if p:
             return p
     except Exception:
         pass
-    # 检查与脚本同目录 / 工作目录下的本地 ffmpeg(.exe)
-    try:
-        base = os.path.dirname(os.path.abspath(__file__))
-        for d in (base, os.getcwd()):
-            for cand in ("ffmpeg.exe", "ffmpeg"):
-                p = os.path.join(d, cand)
-                if os.path.isfile(p):
-                    return p
-    except Exception:
-        pass
+    # 2) 候选目录：打包环境优先用 exe 所在目录与 _MEIPASS，其次脚本目录/工作目录
+    candidate_dirs = []
+    if getattr(sys, "frozen", False):
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        candidate_dirs.append(exe_dir)
+        # PyInstaller 6.x 的 one-folder 新布局会把依赖放在 _internal 子目录
+        candidate_dirs.append(os.path.join(exe_dir, "_internal"))
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            candidate_dirs.append(meipass)
+    candidate_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+    candidate_dirs.append(os.getcwd())
+    for d in candidate_dirs:
+        for cand in ("ffmpeg.exe", "ffmpeg"):
+            p = os.path.join(d, cand)
+            if os.path.isfile(p):
+                return p
+    # 3) imageio-ffmpeg 自带
     try:
         import imageio_ffmpeg
         return imageio_ffmpeg.get_ffmpeg_exe()
