@@ -775,12 +775,15 @@ class AudioHost(QObject):
 _RES_CACHE = None
 
 def get_cached_resolutions():
-    """返回分辨率下拉框用的列表：优先返回已探测缓存，否则返回常见静态列表（不触碰摄像头）。"""
+    """返回分辨率下拉框用的列表：优先返回已探测缓存，否则返回常见静态列表（不触碰摄像头）。
+
+    注意：静态兜底仅包含横屏安全分辨率；竖屏(如 720x1280)只有在摄像头被实测
+    真正支持时才会出现，避免出现「选了但实际不支持」导致崩溃或无意义选项。
+    """
     if _RES_CACHE is not None:
         return _RES_CACHE
-    # 静态兜底，保证界面在探测完成前即可用，且不占用摄像头
     return [(1280, 720), (960, 540), (854, 480), (640, 480),
-            (640, 360), (320, 240), (720, 1280), (480, 854), (360, 640)]
+            (640, 360), (320, 240)]
 
 class ResProbeThread(QThread):
     """后台探测摄像头真实支持的分辨率，避免在主线程/启动时同步打开摄像头。"""
@@ -791,8 +794,109 @@ class ResProbeThread(QThread):
         _RES_CACHE = res
         self.done.emit(res)
 
+def _probe_camera_resolutions_subprocess():
+    """在独立子进程中探测摄像头支持的分辨率（仅开发/源码环境可用）。
+
+    关键点：部分摄像头驱动在 set 到不支持的竖屏尺寸（如 720x1280）后，read()
+    会直接进入底层错误状态使进程崩溃——这种 C 层崩溃无法被 Python 捕获。把探测
+    放到独立子进程里，即便它崩溃也只会杀死子进程，不会拖垮主程序；已确认支持的
+    分辨率会逐行回传，崩溃前已探测到的横屏分辨率照常保留。
+    """
+    if getattr(sys, "frozen", False):
+        return []  # 打包后的 exe 无法用 sys.executable -c 再起解释器，改走进程内探测
+    probe_code = r'''
+import sys, cv2
+candidates = [
+    (1920,1080),(1600,900),(1366,768),(1280,720),(1024,576),
+    (960,540),(854,480),(800,600),(640,480),(640,360),(320,240),
+    (1080,1920),(900,1600),(720,1280),(576,1024),(540,960),
+    (480,854),(480,640),(360,640),(240,320),
+]
+found=[]; seen=set()
+for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+    for i in range(3):
+        cap=None
+        try:
+            cap=cv2.VideoCapture(i, backend)
+            if not cap.isOpened():
+                continue
+            for (w,h) in candidates:
+                try:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH,w)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT,h)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE,1)
+                    aw=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                    ah=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                    if aw!=w or ah!=h:
+                        continue
+                    ret,frame=cap.read()
+                    if not (ret and frame is not None):
+                        continue
+                    if frame.shape[1]!=w or frame.shape[0]!=h:
+                        continue
+                    k=(w,h)
+                    if k not in seen:
+                        seen.add(k); found.append(k); print(f"{w}x{h}", flush=True)
+                except Exception:
+                    continue
+            break
+        except Exception:
+            continue
+        finally:
+            if cap is not None:
+                try: cap.release()
+                except Exception: pass
+    break
+'''
+    try:
+        proc = subprocess.Popen([sys.executable, "-c", probe_code],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        found = []
+        seen = set()
+        deadline = time.time() + 25
+        while True:
+            if time.time() > deadline:
+                break
+            line = proc.stdout.readline()
+            if not line:
+                break  # 子进程结束（含崩溃 EOF）
+            line = line.strip()
+            if "x" in line:
+                try:
+                    a, b = line.split("x")
+                    k = (int(a), int(b))
+                    if k not in seen:
+                        seen.add(k)
+                        found.append(k)
+                except Exception:
+                    pass
+        try:
+            proc.wait(timeout=2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return found
+    except Exception:
+        return []
+
+
 def enumerate_camera_resolutions():
-    """探测默认摄像头硬件支持的分辨率，返回 [(w, h), ...]（横屏在前、同组内按面积降序）。"""
+    """探测默认摄像头硬件支持的分辨率，返回 [(w, h), ...]（横屏在前、同组内按面积降序）。
+
+    竖屏分辨率（如 720x1280）只有在摄像头被实测真正支持时才会被纳入列表；
+    不支持的竖屏不会被列出，也不会在后台探测时引发驱动崩溃。
+    """
+    res = _probe_camera_resolutions_subprocess()
+    if res:
+        res.sort(key=lambda it: (0 if it[0] >= it[1] else 1, -(it[0] * it[1])))
+        return res
+    return _enumerate_inproc()
+
+
+def _enumerate_inproc():
+    """进程内探测（打包后的 exe 走此路径）。严格校验尺寸后才读取，避免驱动崩溃。"""
     candidates = [
         (1920, 1080), (1600, 900), (1366, 768), (1280, 720), (1024, 576),
         (960, 540), (854, 480), (800, 600), (640, 480), (640, 360), (320, 240),
@@ -814,16 +918,17 @@ def enumerate_camera_resolutions():
                     try:
                         cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-                        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        if aw <= 0 or ah <= 0:
+                        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                        # 严格校验：尺寸必须精确匹配，否则视为不支持，绝不在坏状态下 read
+                        if aw != w or ah != h:
                             continue
                         ret, frame = cap.read()
                         if not (ret and frame is not None):
                             continue
-                        if frame.shape[1] != aw or frame.shape[0] != ah:
+                        if frame.shape[1] != w or frame.shape[0] != h:
                             continue
-                        key = (aw, ah)
+                        key = (w, h)
                         if key not in seen:
                             seen.add(key)
                             found.append(key)
@@ -842,8 +947,9 @@ def enumerate_camera_resolutions():
             break
     if not found:
         # 兜底列表：保证界面始终有可选项（实际能否生效由摄像头决定���
+        # 兜底列表：仅横屏安全分辨率，绝不包含竖屏（竖屏需摄像头实测支持才出现）
         found = [(1280, 720), (960, 540), (854, 480), (640, 480),
-                 (640, 360), (320, 240), (720, 1280), (480, 854), (360, 640)]
+                 (640, 360), (320, 240)]
     # 横屏(w>=h)在前，组内按面积降序
     found.sort(key=lambda it: (0 if it[0] >= it[1] else 1, -(it[0] * it[1])))
     return found
@@ -855,6 +961,7 @@ class HostStream:
         self.mutex = QMutex()
         self.cap = None
         self.cap_running = False
+        self._cap_thread = None
         self.cap_frame_queue = deque(maxlen=MAX_VIDEO_BUFFER)
         self.audio_host = AudioHost()
         self.camera_ready = False
@@ -887,6 +994,13 @@ class HostStream:
             self.live_cap.release()
         self.live_cap = cv2.VideoCapture(self.live_stream_url)
         self.live_cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # 切到线上源时释放物理摄像头，避免同时占用两个设备
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
         self.camera_ready = True
         print(f"[主播] 切换线上直播源：{self.live_stream_url}")
         return True
@@ -1041,10 +1155,12 @@ class HostStream:
         return None, None
 
     def init_camera_only(self):
-        auth_ok, _, _, _ = get_auth_info()
-        if not auth_ok:
-            print("[主播] 授权验证失败")
-            return False
+        """打开摄像头用于预览（不强制授权，推流时才校验授权）。
+        已打开且已就绪时直接返回，幂等可重复调用。"""
+        if self.source_type == SOURCE_TYPE_CAM:
+            if self.cap is not None and self.cap.isOpened() and self.cap_frame_queue:
+                self.camera_ready = True
+                return True
         self.cap_running = True
         if self.source_type == SOURCE_TYPE_CAM:
             self.cap = self._get_physical_camera()
@@ -1056,7 +1172,9 @@ class HostStream:
         else:
             self.camera_ready = True
             return True
-        threading.Thread(target=self._cap_reader, daemon=True).start()
+        if not getattr(self, "_cap_thread", None) or not self._cap_thread.is_alive():
+            self._cap_thread = threading.Thread(target=self._cap_reader, daemon=True)
+            self._cap_thread.start()
         for _ in range(30):
             if self.cap_frame_queue:
                 self.camera_ready = True
@@ -1116,6 +1234,19 @@ class HostStream:
             "video_buffer": len(self.cap_frame_queue),
             "audio_queue": self.push_audio_queue.qsize() if self.push_audio_queue else 0,
         }
+
+    def stop_streaming(self):
+        """仅停止 RTMP 推流（麦克风+编码器），保留摄像头与采集线程，预览画面继续显示。"""
+        self.running = False
+        if self.pusher:
+            try:
+                self.pusher.stop()
+            except Exception as e:
+                print(f"[主播] 停止推流异常: {e}")
+            self.pusher = None
+        self.audio_host.stop()
+        self.push_error = None
+        print("[主播] 推流已停止（保留摄像头预览）")
 
     def stop(self):
         self.running = False
@@ -1648,7 +1779,7 @@ class MainWin(QMainWindow):
             btn.setFixedSize(220, 50)
             btn.setStyleSheet("font-size:16px;font-weight:bold;")
             btn.setEnabled(False)
-        self.btn_host.clicked.connect(lambda: self.stack.setCurrentIndex(1))
+        self.btn_host.clicked.connect(self.enter_host_mode)
         self.btn_client.clicked.connect(self.enter_client_auto)
         h_lay.addWidget(self.btn_host, alignment=Qt.AlignCenter)
         h_lay.addWidget(self.btn_client, alignment=Qt.AlignCenter)
@@ -1806,7 +1937,7 @@ class MainWin(QMainWindow):
 
         btn_back_h = QPushButton("返回首页")
         btn_back_h.setFixedHeight(30)
-        btn_back_h.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        btn_back_h.clicked.connect(self.return_home)
         left_lay.addWidget(btn_back_h)
 
         right_host = QWidget()
@@ -1947,7 +2078,7 @@ class MainWin(QMainWindow):
 
         btn_back_c = QPushButton("返回首页")
         btn_back_c.setFixedHeight(30)
-        btn_back_c.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        btn_back_c.clicked.connect(self.return_home)
         leftc_lay.addWidget(btn_back_c)
 
         right_client = QWidget()
@@ -2000,27 +2131,34 @@ class MainWin(QMainWindow):
         if not url:
             QMessageBox.warning(self, "提示", "请输入抖音直播间链接！")
             return
+        auth_ok, _, _, _ = get_auth_info()
+        if not auth_ok:
+            QMessageBox.warning(self, "错误", "未授权或授权已过期!")
+            return
+        # 若正在推流，先停推流（保留摄像头）
+        if self.host_stream.running:
+            self.host_stream.stop_streaming()
+            self.btn_start_host.setText("开始直播推流")
         ok = self.host_stream.set_live_source(url)
         if ok:
-            if not self.timer.isActive():
-                self._wait_res_probe()
-                if not self.host_stream.init_camera_only():
-                    QMessageBox.critical(self, "错误", "启动直播源失败！")
-                    return
-                if not self.host_stream.start_streaming():
-                    QMessageBox.critical(self, "错误", "推流服务启动失败！")
-                    return
-                self.timer.start(55)
-                self.btn_start_host.setText("停止直播推流")
+            self._ensure_host_preview()
+            if not self.host_stream.camera_ready:
+                QMessageBox.critical(self, "错误", "直播源启动失败！")
+                return
+            if not self.host_stream.start_streaming():
+                QMessageBox.critical(self, "错误", "推流服务启动失败！")
+                return
+            self.btn_start_host.setText("停止直播推流")
             QMessageBox.information(self, "成功", "已切换线上直播源，将作为 RTMP 推流画面")
         else:
             QMessageBox.critical(self, "失败", "链接解析失败，请检查链接有效性")
 
     def on_host_switch_cam(self):
+        if self.host_stream.running:
+            self.host_stream.stop_streaming()
+            self.btn_start_host.setText("开始直播推流")
         self.host_stream.set_cam_source()
-        if not self.timer.isActive():
-            self._wait_res_probe()
-            self.host_stream.init_camera_only()
+        self._ensure_host_preview()
         QMessageBox.information(self, "切换", "已切回摄像头采集")
 
     def on_client_local_parse(self):
@@ -2049,32 +2187,56 @@ class MainWin(QMainWindow):
         self.btn_host.setEnabled(checked)
         self.btn_client.setEnabled(checked)
 
+    def enter_host_mode(self):
+        """进入主播模式：打开摄像头预览（不要求授权，推流时才校验），预览画面立即可见。"""
+        self.stack.setCurrentIndex(1)
+        self._ensure_host_preview()
+
+    def _ensure_host_preview(self):
+        """确保摄像头预览已开启：相机未就绪则打开；预览定时器始终运行（与推流解耦）。"""
+        if self.timer.isActive():
+            return
+        self._wait_res_probe()
+        if not self.host_stream.camera_ready:
+            if not self.host_stream.init_camera_only():
+                QMessageBox.critical(self, "错误", "摄像头启动失败，请检查设备！")
+                return
+        self.timer.start(55)
+
+    def return_home(self):
+        """返回首页：停止推流与预览、释放摄像头与观众端资源。"""
+        self.timer.stop()
+        self.host_stream.stop_streaming()
+        self.host_stream.stop()
+        self.client_stream.stop()
+        self.lab_host_preview.clear()
+        self.lab_host_preview.setText("预览画面")
+        self.lab_client_preview.clear()
+        self.lab_client_preview.setText("等待连接...")
+        self.stack.setCurrentIndex(0)
+
     def toggle_host_cam(self):
         auth_ok, _, _, _ = get_auth_info()
         if not auth_ok:
             QMessageBox.warning(self, "错误", "未授权或授权已过期!")
             return
-        if not self.timer.isActive():
-            print("[主界面] 初始化摄像头/直播源...")
-            self._wait_res_probe()
-            if not self.host_stream.init_camera_only():
+        if not self.host_stream.running:
+            # 确保预览已开启（摄像头已打开），再启动推流
+            self._ensure_host_preview()
+            if not self.host_stream.camera_ready:
                 QMessageBox.critical(self, "错误", "摄像头或直播源启动失败，请检查设备！")
                 return
-            print("[主界面] 启动推流服务...")
             if not self.host_stream.start_streaming():
                 QMessageBox.critical(self, "错误", "推流服务启动失败!")
                 return
-            self.timer.start(55)
             self.btn_start_host.setText("停止直播推流")
             backend = self.host_stream.push_backend or "未知"
             self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{RTMP_PUSH_URL}")
         else:
-            self.timer.stop()
-            self.host_stream.stop()
+            # 停止推流，但保留摄像头与预览画面
+            self.host_stream.stop_streaming()
             self.btn_start_host.setText("开始直播推流")
             self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
-            self.lab_host_preview.clear()
-            self.lab_host_preview.setText("预览画面")
 
     def update_host_vol(self, vol):
         self.host_vol_bar.set_vol(vol)
