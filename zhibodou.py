@@ -1307,9 +1307,9 @@ class MainWin(QMainWindow):
         host_page = QWidget()
         host_lay = QHBoxLayout(host_page)
         host_lay.setContentsMargins(15, 15, 15, 15)
-        host_lay.setSpacing(20)
+        host_lay.setSpacing(12)
 
-        left_host = QFrame()
+        left_host = QWidget()
         left_host.setFixedWidth(320)
         left_lay = QVBoxLayout(left_host)
         left_lay.setContentsMargins(12, 12, 12, 12)
@@ -1432,12 +1432,37 @@ class MainWin(QMainWindow):
         right_lay.addWidget(self.lab_host_preview)
 
         # 左侧控制面板内容过多，加入滚动区域防止组件被压缩/截断
+        # 用 QFrame 做视觉外框，QScrollArea 放在里面，让滚动条看起来是面板的一部分
         host_scroll = QScrollArea()
         host_scroll.setWidget(left_host)
         host_scroll.setWidgetResizable(True)
         host_scroll.setFrameShape(QScrollArea.NoFrame)
         host_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        host_lay.addWidget(host_scroll)
+        host_scroll.verticalScrollBar().setStyleSheet("""
+            QScrollBar:vertical {
+                background: transparent;
+                width: 8px;
+                margin: 4px 4px 4px 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #2d88ff;
+                min-height: 40px;
+                border-radius: 4px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+        """)
+        left_host_panel = QFrame()
+        left_host_panel.setFixedWidth(328)
+        left_host_panel_lay = QVBoxLayout(left_host_panel)
+        left_host_panel_lay.setContentsMargins(0, 0, 0, 0)
+        left_host_panel_lay.addWidget(host_scroll)
+        host_lay.addWidget(left_host_panel)
         host_lay.addWidget(right_host)
         self.stack.addWidget(host_page)
 
@@ -1445,9 +1470,9 @@ class MainWin(QMainWindow):
         client_page = QWidget()
         client_lay = QHBoxLayout(client_page)
         client_lay.setContentsMargins(15, 15, 15, 15)
-        client_lay.setSpacing(20)
+        client_lay.setSpacing(12)
 
-        left_client = QFrame()
+        left_client = QWidget()
         left_client.setFixedWidth(320)
         leftc_lay = QVBoxLayout(left_client)
         leftc_lay.setContentsMargins(12, 12, 12, 12)
@@ -1553,7 +1578,31 @@ class MainWin(QMainWindow):
         client_scroll.setWidgetResizable(True)
         client_scroll.setFrameShape(QScrollArea.NoFrame)
         client_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        client_lay.addWidget(client_scroll)
+        client_scroll.verticalScrollBar().setStyleSheet("""
+            QScrollBar:vertical {
+                background: transparent;
+                width: 8px;
+                margin: 4px 4px 4px 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #2d88ff;
+                min-height: 40px;
+                border-radius: 4px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: transparent;
+            }
+        """)
+        left_client_panel = QFrame()
+        left_client_panel.setFixedWidth(328)
+        left_client_panel_lay = QVBoxLayout(left_client_panel)
+        left_client_panel_lay.setContentsMargins(0, 0, 0, 0)
+        left_client_panel_lay.addWidget(client_scroll)
+        client_lay.addWidget(left_client_panel)
         client_lay.addWidget(right_client)
         self.stack.addWidget(client_page)
 
