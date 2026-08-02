@@ -48,12 +48,39 @@ HOST_MODE = "rtmp"
 # ★ RTMP 推流配置（主播端）★
 # 推流服务器地址在代码内固定：本机 127.0.0.1
 # 若需推到公网，请修改 RTMP_SERVER_IP / RTMP_PORT / RTMP_STREAM_KEY
+#
+# 关于 MediaMTX 的 stream key：
+#   MediaMTX 没有 nginx-rtmp 那种「app/stream」两层概念，它把「端口后整段路径」
+#   直接当作流名。因此下面两种写法对 MediaMTX 都合法：
+#     嵌套式：RTMP_APP="live", RTMP_STREAM_KEY="zhibodou"
+#             -> rtmp://127.0.0.1:1935/live/zhibodou   (流名 = live/zhibodou)
+#     扁平式：RTMP_APP="",     RTMP_STREAM_KEY="zhibodou"
+#             -> rtmp://127.0.0.1:1935/zhibodou        (流名 = zhibodou)
+#   如果 mediamtx.yml 里给路径设了 publishUser/publishPass 发布鉴权，
+#   请把账号密码填到 RTMP_PUBLISH_USER / RTMP_PUBLISH_PASS。
 # ============================================================
 RTMP_SERVER_IP = "127.0.0.1"
 RTMP_PORT = 1935
 RTMP_APP = "live"
 RTMP_STREAM_KEY = "zhibodou"
-RTMP_PUSH_URL = f"rtmp://{RTMP_SERVER_IP}:{RTMP_PORT}/{RTMP_APP}/{RTMP_STREAM_KEY}"
+RTMP_PUBLISH_USER = ""   # MediaMTX 发布鉴权账号（未开启则留空）
+RTMP_PUBLISH_PASS = ""   # MediaMTX 发布鉴权密码（未开启则留空）
+
+
+def _build_rtmp_url():
+    """拼接 RTMP 推流地址。APP 留空则扁平；带鉴权则注入 user[:pass]@。"""
+    app_part = f"{RTMP_APP}/" if RTMP_APP else ""
+    if RTMP_PUBLISH_USER:
+        auth = RTMP_PUBLISH_USER
+        if RTMP_PUBLISH_PASS:
+            auth += f":{RTMP_PUBLISH_PASS}"
+        auth += "@"
+    else:
+        auth = ""
+    return f"rtmp://{auth}{RTMP_SERVER_IP}:{RTMP_PORT}/{app_part}{RTMP_STREAM_KEY}"
+
+
+RTMP_PUSH_URL = _build_rtmp_url()
 
 # 编码参数（竖屏 720x1280 输出）
 RTMP_VIDEO_BITRATE = 2_000_000      # 2 Mbps
