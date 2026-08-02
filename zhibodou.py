@@ -915,33 +915,52 @@ class HostStream:
                 print(f"[主播] 设置分辨率失败: {e}")
 
     def _get_physical_camera(self):
+        """打开摄像头并尝试应用所选采集分辨率。
+
+        关键点：部分摄像头驱动在 set 到不支持的竖屏尺寸（如 720x1280）后，
+        后续 read() 会直接进入底层错误状态并使整个进程崩溃（无 Python 异常、
+        程序瞬间消失）。因此这里用 cap.get 验证分辨率是否真正生效；若不支持
+        则放弃该尺寸、回退到摄像头原生分辨率（由 crop_to_portrait 负责裁竖屏）。
+        """
         backend_list = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
         for backend in backend_list:
             for i in range(5):
                 try:
                     cap = cv2.VideoCapture(i, backend)
-                    if cap.isOpened():
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_w)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_h)
-                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                        ret, frame = cap.read()
-                        if ret and frame is not None and np.mean(frame) > 5:
-                            print(f"[主播] 摄像头已打开 #{i}")
-                            return cap
+                    if not cap.isOpened():
+                        continue
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_w)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_h)
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    # 验证分辨率是否真正生效（避免设置不支持尺寸后 read 崩溃）
+                    aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                    ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                    if aw != self.capture_w or ah != self.capture_h:
+                        # 摄像头不支持该尺寸：放弃此分辨率，不在此坏状态下 read
                         cap.release()
-                except:
+                        continue
+                    ret, frame = cap.read()
+                    if ret and frame is not None and frame.shape[0] > 0 and np.mean(frame) > 5:
+                        print(f"[主播] 摄像头已打开 #{i} @ {aw}x{ah}")
+                        return cap
+                    cap.release()
+                except Exception:
                     try:
                         cap.release()
-                    except:
+                    except Exception:
                         pass
                     continue
-        cap = cv2.VideoCapture(0)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_w)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_h)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            print("[主播] 使用备用摄像头 0")
-            return cap
+        # 回退：不强制竖屏尺寸，使用摄像头原生分辨率（crop_to_portrait 裁竖屏）
+        try:
+            cap = cv2.VideoCapture(0)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                print(f"[主播] 使用备用摄像头 0（原生分辨率 {aw}x{ah}，将裁切为竖屏输出）")
+                return cap
+        except Exception:
+            pass
         print("[主播] 未找到摄像头")
         return None
 
@@ -951,10 +970,16 @@ class HostStream:
         while self.cap_running:
             frame = None
             ret = False
-            if self.source_type == SOURCE_TYPE_CAM and self.cap is not None:
-                ret, frame = self.cap.read()
-            elif self.source_type == SOURCE_TYPE_LIVE and self.live_cap is not None:
-                ret, frame = self.live_cap.read()
+            try:
+                if self.source_type == SOURCE_TYPE_CAM and self.cap is not None:
+                    ret, frame = self.cap.read()
+                elif self.source_type == SOURCE_TYPE_LIVE and self.live_cap is not None:
+                    ret, frame = self.live_cap.read()
+            except Exception as e:
+                print(f"[采集] cap.read 异常: {e}")
+                time.sleep(0.1)
+                last_time = time.time()
+                continue
             if ret and frame is not None:
                 with QMutexLocker(self.mutex):
                     self.cap_frame_queue.append(frame)
@@ -2055,19 +2080,26 @@ class MainWin(QMainWindow):
         self.host_vol_bar.set_vol(vol)
 
     def pull_host_frame(self):
-        frame = self.host_stream.get_latest_frame()
-        if frame is None:
-            return
-        br = self.slid_br.value()
-        ct = self.slid_ct.value()
-        st = self.slid_st.value()
-        sh = self.slid_sh.value()
-        send_frame = beauty_process(frame, br, ct, st, sh)
-        send_frame = crop_to_portrait(send_frame)
-        send_frame = cv2.resize(send_frame, (self.lab_host_preview.width(), self.lab_host_preview.height()), cv2.INTER_CUBIC)
-        rgb = cv2.cvtColor(send_frame, cv2.COLOR_BGR2RGB)
-        qimg = QImage(rgb.data, self.lab_host_preview.width(), self.lab_host_preview.height(), self.lab_host_preview.width() * 3, QImage.Format_RGB888)
-        self.lab_host_preview.setPixmap(QPixmap.fromImage(qimg))
+        try:
+            frame = self.host_stream.get_latest_frame()
+            if frame is None:
+                return
+            br = self.slid_br.value()
+            ct = self.slid_ct.value()
+            st = self.slid_st.value()
+            sh = self.slid_sh.value()
+            send_frame = beauty_process(frame, br, ct, st, sh)
+            send_frame = crop_to_portrait(send_frame)
+            pw = max(2, self.lab_host_preview.width())
+            ph = max(2, self.lab_host_preview.height())
+            send_frame = cv2.resize(send_frame, (pw, ph), cv2.INTER_CUBIC)
+            rgb = cv2.cvtColor(send_frame, cv2.COLOR_BGR2RGB)
+            qimg = QImage(rgb.data, pw, ph, pw * 3, QImage.Format_RGB888)
+            self.lab_host_preview.setPixmap(QPixmap.fromImage(qimg))
+        except Exception as e:
+            if not getattr(self, "_pull_err", False):
+                self._pull_err = True
+                print(f"[预览] pull_host_frame 异常: {e}")
 
     def update_client(self, frame):
         if frame is None:
@@ -2083,8 +2115,38 @@ class MainWin(QMainWindow):
         self.client_stream.stop()
         event.accept()
 
+class SafeApplication(QApplication):
+    """捕获 Qt 事件循环中所有未处理的 Python 异常，避免进程静默崩溃退出。
+
+    默认情况下，PyQt5 在槽函数 / QTimer 回调里抛出未捕获异常会直接 abort 进程，
+    表现为“程序点了就消失、没有任何提示”。重写 notify 捕获异常后弹窗 + 写日志。
+    """
+    _crashed = False
+
+    def notify(self, receiver, event):
+        try:
+            return super().notify(receiver, event)
+        except Exception:
+            import traceback as _tb
+            tb_text = _tb.format_exc()
+            print("[FATAL] 未捕获异常（已记录到 crash.log）:\n" + tb_text)
+            try:
+                _log = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "crash.log")
+                with open(_log, "a", encoding="utf-8") as _f:
+                    _f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "\n" + tb_text + "\n\n")
+            except Exception:
+                pass
+            if not SafeApplication._crashed:
+                SafeApplication._crashed = True
+                try:
+                    QMessageBox.critical(None, "程序异常", "发生未捕获异常，已记录到 crash.log：\n\n" + tb_text[-1500:])
+                except Exception:
+                    pass
+            return False
+
+
 if __name__ == "__main__":
-    app = QApplication(sys.argv)
+    app = SafeApplication(sys.argv)
     win = MainWin()
     win.show()
     sys.exit(app.exec_())
