@@ -503,6 +503,64 @@ class AudioHost(QObject):
 # ============================================================
 # 主播流处理类
 # ============================================================
+def enumerate_camera_resolutions():
+    """探测默认摄像头硬件支持的分辨率，返回 [(w, h), ...]（横屏在前、同组内按面积降序）。"""
+    candidates = [
+        (1920, 1080), (1600, 900), (1366, 768), (1280, 720), (1024, 576),
+        (960, 540), (854, 480), (800, 600), (640, 480), (640, 360), (320, 240),
+        (1080, 1920), (900, 1600), (720, 1280), (576, 1024), (540, 960),
+        (480, 854), (480, 640), (360, 640), (240, 320),
+    ]
+    found = []
+    seen = set()
+    probing = False
+    for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
+        for i in range(3):
+            cap = None
+            try:
+                cap = cv2.VideoCapture(i, backend)
+                if not cap.isOpened():
+                    continue
+                probing = True
+                for (w, h) in candidates:
+                    try:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                        if aw <= 0 or ah <= 0:
+                            continue
+                        ret, frame = cap.read()
+                        if not (ret and frame is not None):
+                            continue
+                        if frame.shape[1] != aw or frame.shape[0] != ah:
+                            continue
+                        key = (aw, ah)
+                        if key not in seen:
+                            seen.add(key)
+                            found.append(key)
+                    except Exception:
+                        continue
+                break  # 第一个可用摄像头探测完毕即可
+            except Exception:
+                continue
+            finally:
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+        if probing:
+            break
+    if not found:
+        # 兜底列表：保证界面始终有可选项（实际能否生效由摄像头决定���
+        found = [(1280, 720), (960, 540), (854, 480), (640, 480),
+                 (640, 360), (320, 240), (720, 1280), (480, 854), (360, 640)]
+    # 横屏(w>=h)在前，组内按面积降序
+    found.sort(key=lambda it: (0 if it[0] >= it[1] else 1, -(it[0] * it[1])))
+    return found
+
+
 class HostStream:
     def __init__(self):
         self.running = False
@@ -526,6 +584,9 @@ class HostStream:
         self.source_type = SOURCE_TYPE_CAM
         self.live_stream_url = ""
         self.live_cap = None
+        # 摄像头采集分辨率（默认横屏 720p；UI 可改为竖屏 720p 等）
+        self.capture_w = 1280
+        self.capture_h = 720
         
         self.handshake_frame = None
         self._prepare_handshake()
@@ -569,6 +630,18 @@ class HostStream:
                 self.camera_ready = True
         print("[主播] 切回摄像头采集")
 
+    def set_capture_resolution(self, w, h):
+        """设置摄像头采集分辨率；若摄像头已打开则立即生效。"""
+        self.capture_w = w
+        self.capture_h = h
+        if self.cap is not None and self.cap.isOpened():
+            try:
+                self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                print(f"[主播] 摄像头分辨率已切换为 {w}x{h}")
+            except Exception as e:
+                print(f"[主播] 设置分辨率失败: {e}")
+
     def _get_physical_camera(self):
         backend_list = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
         for backend in backend_list:
@@ -576,8 +649,8 @@ class HostStream:
                 try:
                     cap = cv2.VideoCapture(i, backend)
                     if cap.isOpened():
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_w)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_h)
                         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         ret, frame = cap.read()
                         if ret and frame is not None and np.mean(frame) > 5:
@@ -592,6 +665,8 @@ class HostStream:
                     continue
         cap = cv2.VideoCapture(0)
         if cap.isOpened():
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_h)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             print("[主播] 使用备用摄像头 0")
             return cap
@@ -1206,6 +1281,10 @@ class MainWin(QMainWindow):
     def on_auto_connected(self, ip):
         QMessageBox.information(self, "自动连接", f"已连接到服务器: {ip}")
 
+    def on_res_change(self, idx):
+        w, h = self.res_combo.itemData(idx)
+        self.host_stream.set_capture_resolution(w, h)
+
     def copy_machine_code(self):
         mc = get_machine_code()
         QApplication.clipboard().setText(mc)
@@ -1343,6 +1422,28 @@ class MainWin(QMainWindow):
         self.mic_slider.setValue(50)
         self.mic_slider.valueChanged.connect(lambda v: self.host_stream.audio_host.set_mic_gain(v))
         left_lay.addWidget(self.mic_slider)
+
+        left_lay.addWidget(QLabel("视频分辨率"))
+        self.res_combo = QComboBox()
+        self._supported_res = enumerate_camera_resolutions()
+        for (w, h) in self._supported_res:
+            orient = "竖屏" if h > w else "横屏"
+            self.res_combo.addItem(f"{w}x{h} ({orient})", (w, h))
+        # 默认值：优先竖屏 720p (720x1280)，其次横屏 1280x720，再退回第一个
+        _preferred = [(720, 1280), (1280, 720)]
+        _default_idx = 0
+        for _pref in _preferred:
+            if _pref in self._supported_res:
+                _default_idx = self._supported_res.index(_pref)
+                break
+        self.res_combo.setCurrentIndex(_default_idx)
+        self.res_combo.currentIndexChanged.connect(self.on_res_change)
+        left_lay.addWidget(self.res_combo)
+
+        # 让 HostStream 的采集分辨率与默认选项保持同步
+        _dw, _dh = self._supported_res[_default_idx]
+        self.host_stream.capture_w = _dw
+        self.host_stream.capture_h = _dh
 
         left_lay.addWidget(QLabel("抖音直播间链接 (全局推流)"))
         self.host_live_input = QLineEdit()
