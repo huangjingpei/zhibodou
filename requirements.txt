@@ -9,3 +9,8 @@ streamlink>=3.0.0
 av>=10.0.0
 # ffmpeg 回退方案所需的二进制（若系统已安装 ffmpeg 可省略）
 imageio-ffmpeg>=0.4.3
+
+# ---- 仅打包时需要（运行 build_exe.py 前安装）----
+# pyinstaller 会自动带上 pyinstaller-hooks-contrib，
+# sounddevice / av / cv2 的运行时数据依赖它提供的官方 hook
+pyinstaller>=6.0.0

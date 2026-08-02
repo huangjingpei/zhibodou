@@ -30,6 +30,44 @@ import subprocess
 import shutil
 from fractions import Fraction
 
+# ============================================================
+# 打包运行期兜底（必须在任何 print 之前完成）
+# ============================================================
+IS_FROZEN = getattr(sys, "frozen", False)
+
+def _app_dir():
+    """程序所在目录：打包后为 exe 目录，开发时为脚本目录。"""
+    if IS_FROZEN:
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.abspath(__file__))
+
+def _init_frozen_stdio():
+    """PyInstaller --windowed 下 sys.stdout/stderr 为 None，任何 print() 都会抛
+    AttributeError 直接崩溃。这里把标准输出重定向到 exe 同目录的 zhibodou.log，
+    既避免崩溃，也让无控制台的发布版仍可排查问题。"""
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    class _NullWriter:
+        def write(self, *a, **kw): return 0
+        def flush(self): pass
+        def isatty(self): return False
+    try:
+        log_path = os.path.join(_app_dir(), "zhibodou.log")
+        fp = open(log_path, "a", encoding="utf-8", buffering=1, errors="replace")
+        fp.write("\n===== 启动 %s =====\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+    except Exception:
+        fp = _NullWriter()
+    if sys.stdout is None:
+        sys.stdout = fp
+    if sys.stderr is None:
+        sys.stderr = fp
+
+_init_frozen_stdio()
+
+# 打包成 windowed 版后，子进程（ffmpeg 等）默认会弹出一个黑色控制台窗口，
+# 用 CREATE_NO_WINDOW 抑制。非 Windows 平台为 0，不影响行为。
+CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
 # PyAV 为可选依赖：存在时优先用纯 Python 方式采集 + 编码 + 推流 RTMP
 try:
     import av
@@ -436,7 +474,8 @@ def list_dshow_devices():
         return [], []
     try:
         out = subprocess.run([exe, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-                             capture_output=True, text=True, timeout=20).stderr
+                             capture_output=True, text=True, timeout=20,
+                             creationflags=CREATE_NO_WINDOW).stderr
     except Exception as e:
         print(f"[dshow] 列举设备失败: {e}")
         return [], []
@@ -806,7 +845,8 @@ class FFmpegRtmpPusher:
         ]
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         creationflags=CREATE_NO_WINDOW)
             print(f"[ffmpeg推流] 已启动 -> {self.url}")
             return True
         except Exception as e:
@@ -1055,7 +1095,8 @@ for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
 '''
     try:
         proc = subprocess.Popen([sys.executable, "-c", probe_code],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                creationflags=CREATE_NO_WINDOW)
         found = []
         seen = set()
         deadline = time.time() + 25
@@ -2562,7 +2603,7 @@ class SafeApplication(QApplication):
             tb_text = _tb.format_exc()
             print("[FATAL] 未捕获异常（已记录到 crash.log）:\n" + tb_text)
             try:
-                _log = os.path.join(os.path.dirname(os.path.abspath(sys.executable)), "crash.log")
+                _log = os.path.join(_app_dir(), "crash.log")
                 with open(_log, "a", encoding="utf-8") as _f:
                     _f.write(time.strftime("%Y-%m-%d %H:%M:%S") + "\n" + tb_text + "\n\n")
             except Exception:
@@ -2576,8 +2617,33 @@ class SafeApplication(QApplication):
             return False
 
 
+def _report_fatal(stage, exc_text):
+    """启动阶段的致命错误：写日志 + 尽力弹窗，避免打包后“双击没反应”。"""
+    print(f"[FATAL] {stage} 失败:\n{exc_text}")
+    try:
+        with open(os.path.join(_app_dir(), "crash.log"), "a", encoding="utf-8") as f:
+            f.write(time.strftime("%Y-%m-%d %H:%M:%S") + f" [{stage}]\n" + exc_text + "\n\n")
+    except Exception:
+        pass
+    try:
+        QMessageBox.critical(None, "启动失败",
+                             f"{stage} 失败，详情已写入 crash.log：\n\n" + exc_text[-1500:])
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
+    # 打包后若使用 multiprocessing，子进程会重新执行入口脚本导致无限开窗，必须先声明
+    import multiprocessing
+    multiprocessing.freeze_support()
+
+    import traceback as _tb
     app = SafeApplication(sys.argv)
-    win = MainWin()
-    win.show()
+    try:
+        win = MainWin()
+        win.show()
+    except Exception:
+        # 主窗口构造期的异常不在 Qt 事件循环内，SafeApplication.notify 兜不住
+        _report_fatal("主窗口初始化", _tb.format_exc())
+        sys.exit(1)
     sys.exit(app.exec_())
