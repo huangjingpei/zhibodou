@@ -25,23 +25,48 @@ import pyvirtualcam
 import requests
 import re
 import streamlink
+import queue
+import subprocess
+import shutil
+from fractions import Fraction
+
+# PyAV 为可选依赖：存在时优先用纯 Python 方式采集 + 编码 + 推流 RTMP
+try:
+    import av
+    HAVE_AV = True
+except Exception:
+    av = None
+    HAVE_AV = False
 
 # ============================================================
 # ★ 核心配置（天翼云直推模式）★
 # ============================================================
 ROLE = "host"
-HOST_MODE = "relay"
-BRIDGE_IP = "192.168.1.110"
+HOST_MODE = "rtmp"
 
-VIDEO_PORT = 7000
-AUDIO_PORT = 7001
+# ============================================================
+# ★ RTMP 推流配置（主播端）★
+# 推流服务器地址在代码内固定：本机 127.0.0.1
+# 若需推到公网，请修改 RTMP_SERVER_IP / RTMP_PORT / RTMP_STREAM_KEY
+# ============================================================
+RTMP_SERVER_IP = "127.0.0.1"
+RTMP_PORT = 1935
+RTMP_APP = "live"
+RTMP_STREAM_KEY = "zhibodou"
+RTMP_PUSH_URL = f"rtmp://{RTMP_SERVER_IP}:{RTMP_PORT}/{RTMP_APP}/{RTMP_STREAM_KEY}"
 
-# ★★★ 修改为您的天翼云公网IP ★★★
+# 编码参数（竖屏 720x1280 输出）
+RTMP_VIDEO_BITRATE = 2_000_000      # 2 Mbps
+RTMP_AUDIO_BITRATE = 128_000        # 128 kbps
+RTMP_PRESET = "veryfast"
+
+# ============================================================
+# ★ 观众端拉流仍走原中继服务器（如需改为 RTMP 拉流可在此调整）★
+# ============================================================
+# 原天翼云中继服务器IP（观众端使用，与主播端 RTMP 推流相互独立）
 RELAY_SERVER_IP = "125.122.155.138"
 
-# ★★★ 端口配置（匹配天翼云安全组）★★★
-RELAY_HOST_VIDEO_PORT = 5602      # 主播视频上传端口
-RELAY_HOST_AUDIO_PORT = 5603      # 主播音频上传端口
+# 观众端拉流端口（从中继服务器拉流，与主播端 RTMP 推流相互独立）
 RELAY_CLIENT_VIDEO_PORT = 5612    # 子机视频拉流端口
 RELAY_CLIENT_AUDIO_PORT = 5613    # 子机音频拉流端口
 
@@ -65,8 +90,6 @@ NOISE_REDUCE_THRESHOLD = 0.0003
 VOICE_BOOST_RATIO = 1.2
 AUDIO_OVERFLOW_CLEAR = 400
 
-VIDEO_QUALITY = 50
-ENCODE_PARAM = [cv2.IMWRITE_JPEG_QUALITY, VIDEO_QUALITY, cv2.IMWRITE_JPEG_OPTIMIZE, 1]
 SOCKET_TIMEOUT = 15.0
 
 SECRET_KEY = "ZhiBoDou2026"
@@ -79,7 +102,6 @@ COUNT_DOWN_SEC = 3
 
 MAX_VIDEO_BUFFER = 5
 MAX_AUDIO_BUFFER = 100
-SEND_RETRY_MAX = 5
 RECONNECT_DELAY_MIN = 3
 RECONNECT_DELAY_MAX = 30
 
@@ -328,6 +350,257 @@ def beauty_process(frame, bright=50, contrast=50, sat=50, sharp=50):
         result = np.clip(result, 0, 255)
     return result.astype(np.uint8)
 
+
+# ============================================================
+# RTMP 推流（主播端）
+# 设计：优先用纯 Python（PyAV）采集摄像头+麦克风 -> 编码 -> 推流 RTMP；
+#       若环境没有 PyAV，则回退到 ffmpeg（由 ffmpeg 直接采集设备并推流）。
+# ============================================================
+def find_ffmpeg():
+    """查找可用的 ffmpeg 可执行文件：优先系统 PATH，其次脚本/工作目录下的本地 ffmpeg(.exe)，最后 imageio-ffmpeg 自带二进制。"""
+    try:
+        p = shutil.which("ffmpeg")
+        if p:
+            return p
+    except Exception:
+        pass
+    # 检查与脚本同目录 / 工作目录下的本地 ffmpeg(.exe)
+    try:
+        base = os.path.dirname(os.path.abspath(__file__))
+        for d in (base, os.getcwd()):
+            for cand in ("ffmpeg.exe", "ffmpeg"):
+                p = os.path.join(d, cand)
+                if os.path.isfile(p):
+                    return p
+    except Exception:
+        pass
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def list_dshow_devices():
+    """列出 Windows DirectShow 的视频/音频设备名称（仅 ffmpeg 回退方案使用）。"""
+    exe = find_ffmpeg()
+    if not exe:
+        return [], []
+    try:
+        out = subprocess.run([exe, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+                             capture_output=True, text=True, timeout=20).stderr
+    except Exception as e:
+        print(f"[dshow] 列举设备失败: {e}")
+        return [], []
+    vids, auds = [], []
+    cur = None
+    for line in out.splitlines():
+        if "DirectShow video devices" in line:
+            cur = vids
+        elif "DirectShow audio devices" in line:
+            cur = auds
+        elif cur is not None:
+            m = re.search(r'"([^"]+)"', line)
+            if m:
+                cur.append(m.group(1))
+    return vids, auds
+
+
+class PyAVRtmpPusher:
+    """纯 Python 推流：由调用方持续提供视频帧(BGR)与音频块(int16)，本类用 PyAV 编码并推 RTMP。"""
+
+    def __init__(self, url, width, height, fps, audio_rate, audio_channels,
+                 video_bitrate=RTMP_VIDEO_BITRATE, audio_bitrate=RTMP_AUDIO_BITRATE,
+                 preset=RTMP_PRESET):
+        self.url = url
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.audio_rate = audio_rate
+        self.audio_channels = audio_channels
+        self.video_bitrate = video_bitrate
+        self.audio_bitrate = audio_bitrate
+        self.preset = preset
+        self.container = None
+        self.vstream = None
+        self.astream = None
+        self.running = False
+        self.thread = None
+        self.video_getter = None
+        self.audio_getter = None
+        self.frame_count = 0
+        self.sample_count = 0
+        self.error = None
+
+    def start(self, video_getter, audio_getter=None):
+        self.video_getter = video_getter
+        self.audio_getter = audio_getter
+        self.running = True
+        try:
+            self.container = av.open(self.url, mode="w", format="flv",
+                                     options={"flvflags": "no_duration_filesize"})
+            # 视频流
+            self.vstream = self.container.add_stream("libx264", rate=self.fps)
+            self.vstream.width = self.width
+            self.vstream.height = self.height
+            self.vstream.pix_fmt = "yuv420p"
+            self.vstream.bit_rate = self.video_bitrate
+            self.vstream.codec_context.options = {"preset": self.preset, "tune": "zerolatency"}
+            # 音频流（仅在提供了音频源时创建）
+            if self.audio_getter is not None:
+                self.astream = self.container.add_stream("aac", rate=self.audio_rate)
+                self.astream.layout = "mono" if self.audio_channels == 1 else "stereo"
+                self.astream.bit_rate = self.audio_bitrate
+                self.astream.codec_context.options = {"strict": "experimental"}
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+            return True
+        except Exception as e:
+            self.error = str(e)
+            print(f"[PyAV推流] 启动失败: {e}")
+            try:
+                if self.container:
+                    self.container.close()
+            except Exception:
+                pass
+            self.container = None
+            return False
+
+    def _run(self):
+        vbase = Fraction(1, self.fps)
+        abase = Fraction(1, self.audio_rate)
+        while self.running:
+            try:
+                # 视频帧
+                frame = self.video_getter() if self.video_getter else None
+                if frame is not None:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    vf = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+                    vf.pts = self.frame_count
+                    vf.time_base = vbase
+                    self.frame_count += 1
+                    for pkt in self.vstream.encode(vf):
+                        self.container.mux(pkt)
+                # 音频块（尽量把队列清空，避免累积延迟）
+                if self.audio_getter is not None:
+                    chunk = self.audio_getter()
+                    while chunk is not None:
+                        arr = np.ascontiguousarray(chunk).reshape(-1)
+                        af = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
+                        af.sample_rate = self.audio_rate
+                        af.pts = self.sample_count
+                        af.time_base = abase
+                        self.sample_count += len(arr)
+                        for pkt in self.astream.encode(af):
+                            self.container.mux(pkt)
+                        chunk = self.audio_getter()
+                else:
+                    time.sleep(1.0 / self.fps)
+            except Exception as e:
+                self.error = str(e)
+                print(f"[PyAV推流] 循环异常: {e}")
+                time.sleep(0.2)
+        # 收尾：flush 编码器
+        try:
+            if self.vstream:
+                for pkt in self.vstream.encode(None):
+                    self.container.mux(pkt)
+            if self.astream:
+                for pkt in self.astream.encode(None):
+                    self.container.mux(pkt)
+            self.container.close()
+        except Exception as e:
+            print(f"[PyAV推流] 收尾异常: {e}")
+
+    def stop(self):
+        self.running = False
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=3)
+
+
+class FFmpegRtmpPusher:
+    """回退方案：由 ffmpeg 直接采集摄像头+麦克风（Windows dshow）并推流 RTMP。
+    Python 负责选择设备、构造命令、应用美颜/裁切滤镜。"""
+
+    def __init__(self, url, width, height, fps, audio_rate, audio_channels,
+                 video_bitrate=RTMP_VIDEO_BITRATE, audio_bitrate=RTMP_AUDIO_BITRATE,
+                 preset=RTMP_PRESET):
+        self.url = url
+        self.width = width
+        self.height = height
+        self.fps = fps
+        self.audio_rate = audio_rate
+        self.audio_channels = audio_channels
+        self.video_bitrate = video_bitrate
+        self.audio_bitrate = audio_bitrate
+        self.preset = preset
+        self.proc = None
+        self.running = False
+        self.error = None
+        self.video_device = None
+        self.audio_device = None
+        self.beauty = None  # (bright, contrast, sat) 0-100，默认50
+
+    def configure_devices(self, video_device, audio_device, beauty=None):
+        self.video_device = video_device
+        self.audio_device = audio_device
+        self.beauty = beauty
+
+    def _build_video_filter(self):
+        # 中心裁切为 9:16 竖屏，再缩放到目标分辨率
+        vf = f"crop=ih*9/16:ih,scale={self.width}:{self.height}"
+        if self.beauty:
+            b, c, s = self.beauty
+            bright = (b - 50) / 100.0
+            contrast = 1.0 + (c - 50) / 100.0
+            sat = 1.0 + (s - 50) / 100.0
+            vf = f"eq=brightness={bright:.2f}:contrast={contrast:.2f}:saturation={sat:.2f},{vf}"
+        return vf
+
+    def start(self, video_getter=None, audio_getter=None):
+        self.running = True
+        exe = find_ffmpeg()
+        if not exe:
+            self.error = "未找到 ffmpeg（请安装 ffmpeg 或 imageio-ffmpeg）"
+            return False
+        if not self.video_device:
+            self.error = "未找到可用的 DirectShow 视频设备"
+            return False
+        cmd = [
+            exe, "-y",
+            "-f", "dshow", "-rtbufsize", "100M", "-i", f"video={self.video_device}",
+            "-f", "dshow", "-i", f"audio={self.audio_device}",
+            "-vf", self._build_video_filter(),
+            "-c:v", "libx264", "-preset", self.preset, "-tune", "zerolatency",
+            "-pix_fmt", "yuv420p", "-b:v", str(self.video_bitrate),
+            "-g", str(self.fps * 2),
+            "-c:a", "aac", "-b:a", str(self.audio_bitrate),
+            "-f", "flv", self.url,
+        ]
+        try:
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"[ffmpeg推流] 已启动 -> {self.url}")
+            return True
+        except Exception as e:
+            self.error = str(e)
+            print(f"[ffmpeg推流] 启动失败: {e}")
+            return False
+
+    def stop(self):
+        self.running = False
+        if self.proc:
+            try:
+                self.proc.terminate()
+                self.proc.wait(timeout=5)
+            except Exception:
+                try:
+                    self.proc.kill()
+                except Exception:
+                    pass
+            self.proc = None
+
+
 def get_all_mic_devices():
     mics = []
     try:
@@ -357,19 +630,13 @@ class AudioHost(QObject):
     vol_sig = pyqtSignal(int)
     def __init__(self):
         super().__init__()
-        self.sock = None
         self.running = False
         self.stream = None
         self.mic_gain = 1.2
         self.device_id = None
         self.last_vol = 15
-        self.audio_buffer = deque(maxlen=MAX_AUDIO_BUFFER)
-        self.buffer_lock = threading.Lock()
-        self.send_thread = None
-        self.send_running = False
-        self.send_fail_count = 0
-        self.max_send_fail = 3
-        self.audio_packet_count = 0
+        # 推流音频队列：由 HostStream 注入；麦克风采集的 PCM 会放入此队列供 RTMP 推流使用
+        self.push_queue = None
 
     def set_mic_gain(self, val):
         self.mic_gain = max(1.0, min(2.2, val / 25))
@@ -378,69 +645,39 @@ class AudioHost(QObject):
         self.device_id = dev_id
         print(f"[音频] 选择麦克风设备ID: {dev_id}")
 
+    def set_push_queue(self, q):
+        """设置推流音频队列（仅 PyAV 推流后端需要）。"""
+        self.push_queue = q
+
     def _audio_callback(self, indata, frames, time, status):
         if status:
             print(f"[音频回调] 状态异常: {status}")
             return
-        
         try:
             if indata.shape[1] > 1:
                 data = np.mean(indata, axis=1)
             else:
                 data = indata.flatten()
-            
+
             vol_level = np.max(np.abs(data))
             vol = int(vol_level * 200)
             vol = max(15, min(100, vol))
             self.last_vol = vol
             self.vol_sig.emit(vol)
-            
+
             mask = np.abs(data) > NOISE_REDUCE_THRESHOLD
             data[~mask] *= 0.15
             data *= VOICE_BOOST_RATIO
-            
+
             audio_data = (data * self.mic_gain * 32767).astype(np.int16)
-            pack = audio_data.tobytes()
-            head = struct.pack("!I", len(pack))
-            
-            with self.buffer_lock:
-                if len(self.audio_buffer) < MAX_AUDIO_BUFFER:
-                    self.audio_buffer.append(head + pack)
-                    self.audio_packet_count += 1
-                    if self.audio_packet_count % 50 == 0:
-                        print(f"[音频] 已采集 {self.audio_packet_count} 包")
+            # 若已配置推流音频队列，则放入队列（非阻塞，满则丢弃避免阻塞音频回调）
+            if self.push_queue is not None:
+                try:
+                    self.push_queue.put_nowait(audio_data)
+                except queue.Full:
+                    pass
         except Exception as e:
             print(f"[音频回调] 异常: {e}")
-
-    def _sender_thread(self):
-        self.send_running = True
-        consecutive_fail = 0
-        while self.send_running and self.running:
-            try:
-                if self.sock and self.running:
-                    data_to_send = None
-                    with self.buffer_lock:
-                        if self.audio_buffer:
-                            data_to_send = self.audio_buffer.popleft()
-                    if data_to_send:
-                        try:
-                            self.sock.sendall(data_to_send)
-                            consecutive_fail = 0
-                        except (socket.error, BrokenPipeError, ConnectionResetError) as e:
-                            consecutive_fail += 1
-                            print(f"[音频] 发送失败 ({consecutive_fail}/{self.max_send_fail}): {e}")
-                            if consecutive_fail >= self.max_send_fail:
-                                print("[音频] 连续发送失败，标记socket无效")
-                                self.sock = None
-                                break
-                            time.sleep(0.05)
-                    else:
-                        time.sleep(0.005)
-                else:
-                    time.sleep(0.01)
-            except Exception as e:
-                print(f"[音频] 发送线程异常: {e}")
-                time.sleep(0.1)
 
     def start_mic_only(self):
         if self.device_id is None:
@@ -457,9 +694,8 @@ class AudioHost(QObject):
             except Exception as e:
                 print(f"[音频] 自动检测麦克风失败: {e}")
                 return False
-        
+
         self.running = True
-        self.audio_packet_count = 0
         try:
             print(f"[音频] 启动麦克风，设备ID: {self.device_id}")
             self.stream = sd.InputStream(
@@ -471,8 +707,6 @@ class AudioHost(QObject):
                 latency=AUDIO_LATENCY
             )
             self.stream.start()
-            self.send_thread = threading.Thread(target=self._sender_thread, daemon=True)
-            self.send_thread.start()
             print("[音频] 麦克风已启动")
             return True
         except Exception as e:
@@ -482,7 +716,6 @@ class AudioHost(QObject):
 
     def stop(self):
         self.running = False
-        self.send_running = False
         if self.stream:
             try:
                 self.stream.stop()
@@ -490,14 +723,7 @@ class AudioHost(QObject):
             except:
                 pass
             self.stream = None
-        if self.sock:
-            try:
-                self.sock.close()
-            except:
-                pass
-            self.sock = None
-        with self.buffer_lock:
-            self.audio_buffer.clear()
+        self.push_queue = None
         print("[音频] 已停止")
 
 # ============================================================
@@ -569,40 +795,24 @@ class HostStream:
         self.cap_running = False
         self.cap_frame_queue = deque(maxlen=MAX_VIDEO_BUFFER)
         self.audio_host = AudioHost()
-        self.max_connections = 10
-        self.current_clients = 0
         self.camera_ready = False
         self.bright = 50
         self.contrast = 50
         self.sat = 50
         self.sharp = 50
-        self.host_id = None
-        self.connection_retry_count = 0
-        self.max_retry = 10
-        self.last_send_time = 0
-        self.send_timeout = 3.0
         self.source_type = SOURCE_TYPE_CAM
         self.live_stream_url = ""
         self.live_cap = None
         # 摄像头采集分辨率（默认横屏 720p；UI 可改为竖屏 720p 等）
         self.capture_w = 1280
         self.capture_h = 720
-        
-        self.handshake_frame = None
-        self._prepare_handshake()
 
-    def _prepare_handshake(self):
-        black_img = np.zeros((VIRTUAL_CAM_HEIGHT, VIRTUAL_CAM_WIDTH, 3), dtype=np.uint8)
-        ret, jpg_buf = cv2.imencode(".jpg", black_img, ENCODE_PARAM)
-        if ret:
-            self.handshake_frame = jpg_buf.tobytes()
-            print("[主播] 视频握手帧已准备")
-        else:
-            self.handshake_frame = b""
-            print("[主播] 视频握手帧生成失败")
-
-    def set_max_clients(self, maxc):
-        self.max_connections = maxc
+        # RTMP 推流相关
+        self.push_video_queue = queue.Queue(maxsize=10)
+        self.push_audio_queue = queue.Queue(maxsize=300)
+        self.pusher = None
+        self.push_backend = None      # "pyav" / "ffmpeg" / None
+        self.push_error = None
 
     def set_live_source(self, live_url):
         self.source_type = SOURCE_TYPE_LIVE
@@ -692,139 +902,62 @@ class HostStream:
                 time.sleep(sleep)
             last_time = now
 
-    def _listen_video_server(self):
-        ip = RELAY_SERVER_IP
-        port = RELAY_HOST_VIDEO_PORT
-        name = "天翼云"
-        self._connect_and_send(ip, port, name)
+    # ---------------- RTMP 推流 ----------------
+    def produce_push_frame(self):
+        """产出一帧用于推流的画面：美颜 -> 中心裁切竖屏 -> 缩放到 720x1280。"""
+        with QMutexLocker(self.mutex):
+            if not self.cap_frame_queue:
+                return None
+            raw = self.cap_frame_queue[-1]
+        proc = beauty_process(raw, self.bright, self.contrast, self.sat, self.sharp)
+        proc = crop_to_portrait(proc)
+        proc = cv2.resize(proc, (VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT), cv2.INTER_LANCZOS4)
+        return proc
 
-    def _connect_and_send(self, ip, port, name):
-        while self.running:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(SOCKET_TIMEOUT)
-                sock.connect((ip, port))
-                if self.host_id is None:
-                    self.host_id = hashlib.md5(f"{get_local_ip()}{time.time()}".encode()).hexdigest()[:8]
-                print(f"[主播] 视频已连接 {name} {ip}:{port}")
-
-                if self.handshake_frame:
-                    try:
-                        head = struct.pack("!I", len(self.handshake_frame))
-                        sock.sendall(head + self.handshake_frame)
-                        print("[主播] 已发送视频握手帧")
-                    except Exception as e:
-                        print(f"[主播] 发送握手帧失败: {e}")
-
-                self.connection_retry_count = 0
-                self._video_loop(sock)
-            except Exception as e:
-                self.connection_retry_count += 1
-                wait_time = min(RECONNECT_DELAY_MAX, RECONNECT_DELAY_MIN * (2 ** (self.connection_retry_count - 1)))
-                print(f"[主播] 连接失败 (尝试{self.connection_retry_count}): {e}")
-                print(f"[主播] {wait_time}秒后重试...")
-                time.sleep(wait_time)
-                if self.connection_retry_count >= self.max_retry:
-                    print("[主播] 达到最大重试次数")
-                    break
-
-    def _video_loop(self, sock):
-        frame_interval = 1.0 / BASE_FPS
-        last_time = time.time()
-        consecutive_fail = 0
-        frame_count = 0
+    def _pop_audio_chunk(self):
         try:
-            while self.running:
-                if not self._check_socket_alive(sock):
-                    print("[主播] 视频Socket断流")
-                    break
-                if self.cap_frame_queue:
-                    raw_frame = self.cap_frame_queue[-1]
-                    proc_frame = beauty_process(raw_frame, self.bright, self.contrast,
-                                               self.sat, self.sharp)
-                    proc_frame = crop_to_portrait(proc_frame)
-                    proc_frame = cv2.resize(proc_frame,
-                                           (VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT),
-                                           cv2.INTER_LANCZOS4)
-                    ret, jpg_buf = cv2.imencode(".jpg", proc_frame, ENCODE_PARAM)
-                    if ret:
-                        frame_bytes = jpg_buf.tobytes()
-                        head = struct.pack("!I", len(frame_bytes))
-                        try:
-                            sock.sendall(head + frame_bytes)
-                            consecutive_fail = 0
-                            self.last_send_time = time.time()
-                            frame_count += 1
-                            if frame_count % 30 == 0:
-                                print(f"[视频] 已发送 {frame_count} 帧")
-                        except (socket.error, BrokenPipeError, ConnectionResetError):
-                            consecutive_fail += 1
-                            if consecutive_fail >= SEND_RETRY_MAX:
-                                print(f"[主播] 连续发送失败 {consecutive_fail} 次")
-                                break
-                            time.sleep(0.1)
-                            continue
-                now = time.time()
-                sleep = frame_interval - (now - last_time)
-                if sleep > 0:
-                    time.sleep(sleep)
-                last_time = now
-        except Exception as e:
-            print(f"[主播] 视频循环异常: {e}")
-        finally:
-            try:
-                sock.close()
-            except:
-                pass
+            return self.push_audio_queue.get_nowait()
+        except queue.Empty:
+            return None
 
-    def _check_socket_alive(self, sock):
+    def _resolve_audio_device(self, auds):
+        """根据已选麦克风设备，匹配 dshow 音频设备名。"""
+        if self.audio_host.device_id is None:
+            return auds[0] if auds else None
         try:
-            sock.getsockname()
-            if time.time() - self.last_send_time > self.send_timeout and self.last_send_time > 0:
-                return False
-            return True
-        except:
-            return False
+            name = sd.query_devices(self.audio_host.device_id)["name"]
+        except Exception:
+            return auds[0] if auds else None
+        for d in auds:
+            if name in d or d in name:
+                return d
+        return auds[0] if auds else name
 
-    def _listen_audio_server(self):
-        ip = RELAY_SERVER_IP
-        port = RELAY_HOST_AUDIO_PORT
-        name = "天翼云"
-        self._connect_audio(ip, port, name)
-
-    def _connect_audio(self, ip, port, name):
-        while self.running:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                sock.settimeout(SOCKET_TIMEOUT)
-                sock.connect((ip, port))
-                self.audio_host.sock = sock
-                print(f"[主播] 音频已连接 {name} {ip}:{port}")
-
-                silence_samples = b'\x00' * (AUDIO_BLOCK * 2)
-                head = struct.pack("!I", len(silence_samples))
-                sock.sendall(head + silence_samples)
-                print("[主播] 已发送音频静音握手包")
-
-                while self.running and self.audio_host.sock:
-                    time.sleep(0.2)
-            except Exception as e:
-                print(f"[主播] 音频断开: {e}")
-                self.audio_host.sock = None
-                try:
-                    sock.close()
-                except:
-                    pass
-                time.sleep(RECONNECT_DELAY_MIN)
+    def _create_pusher(self):
+        """根据运行环境自动选择推流后端：优先 PyAV（纯 Python），否则 ffmpeg。"""
+        if HAVE_AV:
+            return PyAVRtmpPusher(
+                RTMP_PUSH_URL, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
+                BASE_FPS, AUDIO_RATE, AUDIO_CHANNELS), "pyav"
+        ffmpeg_exe = find_ffmpeg()
+        if ffmpeg_exe is not None:
+            p = FFmpegRtmpPusher(
+                RTMP_PUSH_URL, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
+                BASE_FPS, AUDIO_RATE, AUDIO_CHANNELS)
+            vids, auds = list_dshow_devices()
+            video_dev = vids[0] if vids else None
+            audio_dev = self._resolve_audio_device(auds)
+            p.configure_devices(video_dev, audio_dev,
+                                beauty=(self.bright, self.contrast, self.sat))
+            print(f"[主播] ffmpeg 推流：视频设备={video_dev}，音频设备={audio_dev}")
+            return p, "ffmpeg"
+        return None, None
 
     def init_camera_only(self):
-        auth_ok, _, _, max_client = get_auth_info()
+        auth_ok, _, _, _ = get_auth_info()
         if not auth_ok:
             print("[主播] 授权验证失败")
             return False
-        self.max_connections = max_client
         self.cap_running = True
         if self.source_type == SOURCE_TYPE_CAM:
             self.cap = self._get_physical_camera()
@@ -851,16 +984,32 @@ class HostStream:
         if not self.camera_ready:
             print("[主播] 摄像头未就绪")
             return False
-        
-        if not self.audio_host.start_mic_only():
-            print("[主播] 警告：麦克风启动失败，将只推视频")
+        # 1) 选择推流后端
+        self.pusher, self.push_backend = self._create_pusher()
+        if self.pusher is None:
+            self.push_error = "未找到可用的推流后端（需要安装 PyAV 或系统 ffmpeg）"
+            print("[主播] " + self.push_error)
+            return False
+        # 2) 仅 PyAV 后端需要 Python 采集音频；ffmpeg 后端由 ffmpeg 直接采集
+        if self.push_backend == "pyav":
+            self.audio_host.set_push_queue(self.push_audio_queue)
+            if not self.audio_host.start_mic_only():
+                print("[主播] 警告：麦克风启动失败，将只推视频")
+            else:
+                print("[主播] 麦克风启动成功")
         else:
-            print("[主播] 麦克风启动成功")
-        
+            print("[主播] ffmpeg 后端将自行采集音频，跳过 Python 麦克风采集")
+        # 3) 启动推流
+        audio_getter = self._pop_audio_chunk if self.push_backend == "pyav" else None
+        ok = self.pusher.start(video_getter=self.produce_push_frame, audio_getter=audio_getter)
+        if not ok:
+            self.push_error = getattr(self.pusher, "error", "推流启动失败")
+            print(f"[主播] 推流启动失败: {self.push_error}")
+            self.pusher = None
+            self.audio_host.stop()
+            return False
         self.running = True
-        threading.Thread(target=self._listen_video_server, daemon=True).start()
-        threading.Thread(target=self._listen_audio_server, daemon=True).start()
-        print("[主播] 推流服务已启动")
+        print(f"[主播] RTMP 推流已启动（后端: {self.push_backend}）-> {RTMP_PUSH_URL}")
         return True
 
     def start(self):
@@ -874,17 +1023,22 @@ class HostStream:
         return {
             "running": self.running,
             "camera_ready": self.camera_ready,
-            "clients": self.current_clients,
-            "max_clients": self.max_connections,
+            "source_type": self.source_type,
+            "push_backend": self.push_backend,
+            "push_error": self.push_error,
             "video_buffer": len(self.cap_frame_queue),
-            "audio_buffer": len(self.audio_host.audio_buffer),
-            "retry_count": self.connection_retry_count,
-            "source_type": self.source_type
+            "audio_queue": self.push_audio_queue.qsize() if self.push_audio_queue else 0,
         }
 
     def stop(self):
         self.running = False
         self.cap_running = False
+        if self.pusher:
+            try:
+                self.pusher.stop()
+            except Exception as e:
+                print(f"[主播] 停止推流异常: {e}")
+            self.pusher = None
         self.audio_host.stop()
         if self.cap:
             self.cap.release()
@@ -1262,7 +1416,7 @@ class MainWin(QMainWindow):
 
     def refresh_auth_status(self):
         auth_ok, remain_sec, total_days, max_client = get_auth_info()
-        curr_client = self.host_stream.current_clients
+        push_backend = self.host_stream.push_backend or "未启动"
         if auth_ok:
             days = remain_sec // DAY_SEC
             rem = remain_sec % DAY_SEC
@@ -1271,7 +1425,7 @@ class MainWin(QMainWindow):
             mins = rem // 60
             secs = rem % 60
             self.lab_auth_status.setText(
-                f"状态: 已激活 | 剩余: {days}天 {hours:02d}时 {mins:02d}分 {secs:02d}秒\n客户端: {max_client}-{curr_client}"
+                f"状态: 已激活 | 剩余: {days}天 {hours:02d}时 {mins:02d}分 {secs:02d}秒\n推流后端: {push_backend}"
             )
             self.btn_start_host.setEnabled(True)
         else:
@@ -1400,6 +1554,11 @@ class MainWin(QMainWindow):
         self.btn_start_host.clicked.connect(self.toggle_host_cam)
         left_lay.addWidget(self.btn_start_host)
 
+        self.lab_rtmp = QLabel(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
+        self.lab_rtmp.setWordWrap(True)
+        self.lab_rtmp.setStyleSheet("font-size:11px;color:#00ccff;")
+        left_lay.addWidget(self.lab_rtmp)
+
         left_lay.addWidget(QLabel("选择麦克风设备"))
         self.mic_combo = QComboBox()
         for dev_id, dev_name in self.all_mics:
@@ -1449,7 +1608,7 @@ class MainWin(QMainWindow):
         self.host_live_input = QLineEdit()
         self.host_live_input.setPlaceholderText("粘贴抖音直播分享链接")
         left_lay.addWidget(self.host_live_input)
-        host_parse_btn = QPushButton("解析线上流（全局推流所有子机）")
+        host_parse_btn = QPushButton("解析线上流（作为推流画面源）")
         host_parse_btn.clicked.connect(self.on_host_parse_live)
         host_cam_btn = QPushButton("切回摄像头采集")
         host_cam_btn.clicked.connect(self.on_host_switch_cam)
@@ -1725,7 +1884,7 @@ class MainWin(QMainWindow):
                     return
                 self.timer.start(55)
                 self.btn_start_host.setText("停止直播推流")
-            QMessageBox.information(self, "成功", "已切换线上直播源，画面将同步推送所有子机")
+            QMessageBox.information(self, "成功", "已切换线上直播源，将作为 RTMP 推流画面")
         else:
             QMessageBox.critical(self, "失败", "链接解析失败，请检查链接有效性")
 
@@ -1777,10 +1936,13 @@ class MainWin(QMainWindow):
                 return
             self.timer.start(55)
             self.btn_start_host.setText("停止直播推流")
+            backend = self.host_stream.push_backend or "未知"
+            self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{RTMP_PUSH_URL}")
         else:
             self.timer.stop()
             self.host_stream.stop()
             self.btn_start_host.setText("开始直播推流")
+            self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
             self.lab_host_preview.clear()
             self.lab_host_preview.setText("预览画面")
 

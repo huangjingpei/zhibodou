@@ -5,3 +5,7 @@ sounddevice>=0.4.0
 pyvirtualcam>=0.9.0
 requests>=2.25.0
 streamlink>=3.0.0
+# RTMP 推流（纯 Python 采集+编码+推流，优先使用）
+av>=10.0.0
+# ffmpeg 回退方案所需的二进制（若系统已安装 ffmpeg 可省略）
+imageio-ffmpeg>=0.4.3
