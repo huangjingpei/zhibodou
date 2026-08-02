@@ -1415,7 +1415,7 @@ class MainWin(QMainWindow):
         auth_lay.addWidget(self.license_edit)
         auth_lay.addWidget(btn_act)
         left_lay.addWidget(self.auth_frame)
-        left_lay.addStretch()
+        # 移除 stretch：左侧内容已超出窗口高度，改为用 QScrollArea 滚动，避免组件被压缩
 
         btn_back_h = QPushButton("返回首页")
         btn_back_h.setFixedHeight(30)
@@ -1430,7 +1430,14 @@ class MainWin(QMainWindow):
         self.lab_host_preview.setStyleSheet("border:2px solid #2d88ff;background:#000;color:#888;border-radius:8px;font-size:16px;")
         self.lab_host_preview.setAlignment(Qt.AlignCenter)
         right_lay.addWidget(self.lab_host_preview)
-        host_lay.addWidget(left_host)
+
+        # 左侧控制面板内容过多，加入滚动区域防止组件被压缩/截断
+        host_scroll = QScrollArea()
+        host_scroll.setWidget(left_host)
+        host_scroll.setWidgetResizable(True)
+        host_scroll.setFrameShape(QScrollArea.NoFrame)
+        host_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        host_lay.addWidget(host_scroll)
         host_lay.addWidget(right_host)
         self.stack.addWidget(host_page)
 
@@ -1524,7 +1531,7 @@ class MainWin(QMainWindow):
         self.vol_slider.setValue(82)
         self.vol_slider.valueChanged.connect(self.client_stream.audio_client.set_volume)
         leftc_lay.addWidget(self.vol_slider)
-        leftc_lay.addStretch()
+        # 同主播页：移除 stretch，由 QScrollArea 处理溢出
 
         btn_back_c = QPushButton("返回首页")
         btn_back_c.setFixedHeight(30)
@@ -1539,7 +1546,14 @@ class MainWin(QMainWindow):
         self.lab_client_preview.setStyleSheet("border:2px solid #2d88ff;background:#000;color:#888;border-radius:8px;font-size:16px;")
         self.lab_client_preview.setAlignment(Qt.AlignCenter)
         right_layc.addWidget(self.lab_client_preview)
-        client_lay.addWidget(left_client)
+
+        # 观众页左侧同样加入滚动区域
+        client_scroll = QScrollArea()
+        client_scroll.setWidget(left_client)
+        client_scroll.setWidgetResizable(True)
+        client_scroll.setFrameShape(QScrollArea.NoFrame)
+        client_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        client_lay.addWidget(client_scroll)
         client_lay.addWidget(right_client)
         self.stack.addWidget(client_page)
 
