@@ -28,6 +28,7 @@ import streamlink
 import queue
 import subprocess
 import shutil
+import tempfile
 from fractions import Fraction
 
 # ============================================================
@@ -45,12 +46,20 @@ def _init_frozen_stdio():
     """PyInstaller --windowed 下 sys.stdout/stderr 为 None，任何 print() 都会抛
     AttributeError 直接崩溃。这里把标准输出重定向到 exe 同目录的 zhibodou.log，
     既避免崩溃，也让无控制台的发布版仍可排查问题。"""
-    if sys.stdout is not None and sys.stderr is not None:
-        return
     class _NullWriter:
         def write(self, *a, **kw): return 0
         def flush(self): pass
         def isatty(self): return False
+    # 分辨率探测 worker 子进程不写日志文件（避免与主进程争抢），但仍需保证
+    # stdout/stderr 非 None，否则 windowed 模式下任何 print 都会抛异常。
+    if "--probe-cam" in sys.argv:
+        if sys.stdout is None:
+            sys.stdout = _NullWriter()
+        if sys.stderr is None:
+            sys.stderr = _NullWriter()
+        return
+    if sys.stdout is not None and sys.stderr is not None:
+        return
     try:
         log_path = os.path.join(_app_dir(), "zhibodou.log")
         fp = open(log_path, "a", encoding="utf-8", buffering=1, errors="replace")
@@ -249,14 +258,17 @@ SOURCE_TYPE_LIVE = "live"
 # ============================================================
 # 单例检测、工具函数、授权等
 # ============================================================
-try:
-    import ctypes
-    mutex = ctypes.windll.kernel32.CreateMutexW(None, 1, "Global\\ZhiBoDou_SingleInstance")
-    if ctypes.windll.kernel32.GetLastError() == 183:
-        ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中", "提示", 0)
-        sys.exit(0)
-except:
-    pass
+# 注意：分辨率探测 worker 是主程序自调用的子进程，必须跳过单例检测，
+# 否则它会撞上主进程持有的 mutex，弹出「程序已经在运行中」并卡死在模态框上。
+if "--probe-cam" not in sys.argv:
+    try:
+        import ctypes
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, 1, "Global\\ZhiBoDou_SingleInstance")
+        if ctypes.windll.kernel32.GetLastError() == 183:
+            ctypes.windll.user32.MessageBoxW(0, "程序已经在运行中", "提示", 0)
+            sys.exit(0)
+    except:
+        pass
 
 def get_local_ip():
     try:
@@ -1020,15 +1032,19 @@ class AudioHost(QObject):
 _RES_CACHE = None
 
 def get_cached_resolutions():
-    """返回分辨率下拉框用的列表：优先返回已探测缓存，否则返回常见静态列表（不触碰摄像头）。
+    """返回分辨率下拉框用的列表：内存缓存 -> 磁盘缓存 -> 静态安全列表（不触碰摄像头）。
 
     注意：静态兜底仅包含横屏安全分辨率；竖屏(如 720x1280)只有在摄像头被实测
     真正支持时才会出现，避免出现「选了但实际不支持」导致崩溃或无意义选项。
     """
+    global _RES_CACHE
     if _RES_CACHE is not None:
         return _RES_CACHE
-    return [(1280, 720), (960, 540), (854, 480), (640, 480),
-            (640, 360), (320, 240)]
+    disk = load_res_cache_from_disk()
+    if disk:
+        _RES_CACHE = disk
+        return disk
+    return list(SAFE_FALLBACK_RES)
 
 class ResProbeThread(QThread):
     """后台探测摄像头真实支持的分辨率，避免在主线程/启动时同步打开摄像头。"""
@@ -1039,134 +1055,76 @@ class ResProbeThread(QThread):
         _RES_CACHE = res
         self.done.emit(res)
 
-def _probe_camera_resolutions_subprocess():
-    """在独立子进程中探测摄像头支持的分辨率（仅开发/源码环境可用）。
-
-    关键点：部分摄像头驱动在 set 到不支持的竖屏尺寸（如 720x1280）后，read()
-    会直接进入底层错误状态使进程崩溃——这种 C 层崩溃无法被 Python 捕获。把探测
-    放到独立子进程里，即便它崩溃也只会杀死子进程，不会拖垮主程序；已确认支持的
-    分辨率会逐行回传，崩溃前已探测到的横屏分辨率照常保留。
-    """
-    if getattr(sys, "frozen", False):
-        return []  # 打包后的 exe 无法用 sys.executable -c 再起解释器，改走进程内探测
-    probe_code = r'''
-import sys, cv2
-candidates = [
-    (1920,1080),(1600,900),(1366,768),(1280,720),(1024,576),
-    (960,540),(854,480),(800,600),(640,480),(640,360),(320,240),
-    (1080,1920),(900,1600),(720,1280),(576,1024),(540,960),
-    (480,854),(480,640),(360,640),(240,320),
+# 探测候选分辨率：横屏在前，竖屏在后（竖屏需实测支持才会进入列表）
+PROBE_CANDIDATES = [
+    (1920, 1080), (1600, 900), (1366, 768), (1280, 720), (1024, 576),
+    (960, 540), (854, 480), (800, 600), (640, 480), (640, 360), (320, 240),
+    (1080, 1920), (900, 1600), (720, 1280), (576, 1024), (540, 960),
+    (480, 854), (480, 640), (360, 640), (240, 320),
 ]
-found=[]; seen=set()
-for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
-    for i in range(3):
-        cap=None
-        try:
-            cap=cv2.VideoCapture(i, backend)
-            if not cap.isOpened():
-                continue
-            for (w,h) in candidates:
-                try:
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH,w)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT,h)
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE,1)
-                    aw=int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-                    ah=int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-                    if aw!=w or ah!=h:
-                        continue
-                    ret,frame=cap.read()
-                    if not (ret and frame is not None):
-                        continue
-                    if frame.shape[1]!=w or frame.shape[0]!=h:
-                        continue
-                    k=(w,h)
-                    if k not in seen:
-                        seen.add(k); found.append(k); print(f"{w}x{h}", flush=True)
-                except Exception:
-                    continue
-            break
-        except Exception:
-            continue
-        finally:
-            if cap is not None:
-                try: cap.release()
-                except Exception: pass
-    break
-'''
+
+# 静态安全兜底：仅横屏常见尺寸，任何摄像头基本都能接受
+SAFE_FALLBACK_RES = [(1280, 720), (960, 540), (854, 480), (640, 480),
+                     (640, 360), (320, 240)]
+
+# 子进程探测的命令行开关：exe 以该参数自调用时只做探测、不启动界面
+PROBE_ARG = "--probe-cam"
+
+
+def _res_cache_path():
+    return os.path.join(_app_dir(), "camres.json")
+
+
+def _res_flag_path():
+    """探测进行中标记：若启动时该文件仍存在，说明上次探测把进程搞崩了。"""
+    return os.path.join(_app_dir(), "camres.probing")
+
+
+def load_res_cache_from_disk():
+    """读取磁盘上的探测结果，避免每次启动都去碰摄像头。失败返回 None。"""
     try:
-        proc = subprocess.Popen([sys.executable, "-c", probe_code],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                creationflags=CREATE_NO_WINDOW)
-        found = []
-        seen = set()
-        deadline = time.time() + 25
-        while True:
-            if time.time() > deadline:
-                break
-            line = proc.stdout.readline()
-            if not line:
-                break  # 子进程结束（含崩溃 EOF）
-            line = line.strip()
-            if "x" in line:
-                try:
-                    a, b = line.split("x")
-                    k = (int(a), int(b))
-                    if k not in seen:
-                        seen.add(k)
-                        found.append(k)
-                except Exception:
-                    pass
-        try:
-            proc.wait(timeout=2)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
-        return found
+        with open(_res_cache_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        res = [(int(w), int(h)) for w, h in data.get("resolutions", [])]
+        return res or None
     except Exception:
-        return []
+        return None
 
 
-def enumerate_camera_resolutions():
-    """探测默认摄像头硬件支持的分辨率，返回 [(w, h), ...]（横屏在前、同组内按面积降序）。
+def save_res_cache_to_disk(res):
+    try:
+        with open(_res_cache_path(), "w", encoding="utf-8") as f:
+            json.dump({"resolutions": [[w, h] for (w, h) in res]}, f)
+    except Exception:
+        pass
 
-    竖屏分辨率（如 720x1280）只有在摄像头被实测真正支持时才会被纳入列表；
-    不支持的竖屏不会被列出，也不会在后台探测时引发驱动崩溃。
+
+def probe_resolutions_core(on_found=None):
+    """实际探测逻辑（主进程与 worker 子进程共用）。
+
+    收敛策略（每一条都是为了避开已知的驱动级崩溃点）：
+      * 只用 CAP_DSHOW —— Windows 上最稳；CAP_MSMF 打开不存在的设备索引
+        是经典的进程级崩溃点，这里完全不碰。
+      * 设备索引只试 0 和 1，不再盲扫到 4。
+      * set 之后必须 get 回读且精确相等，才允许 read；否则跳过，
+        绝不在驱动的坏状态下读帧。
     """
-    res = _probe_camera_resolutions_subprocess()
-    if res:
-        res.sort(key=lambda it: (0 if it[0] >= it[1] else 1, -(it[0] * it[1])))
-        return res
-    return _enumerate_inproc()
-
-
-def _enumerate_inproc():
-    """进程内探测（打包后的 exe 走此路径）。严格校验尺寸后才读取，避免驱动崩溃。"""
-    candidates = [
-        (1920, 1080), (1600, 900), (1366, 768), (1280, 720), (1024, 576),
-        (960, 540), (854, 480), (800, 600), (640, 480), (640, 360), (320, 240),
-        (1080, 1920), (900, 1600), (720, 1280), (576, 1024), (540, 960),
-        (480, 854), (480, 640), (360, 640), (240, 320),
-    ]
-    found = []
-    seen = set()
-    probing = False
-    for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY):
-        for i in range(3):
+    found, seen = [], set()
+    backends = [cv2.CAP_DSHOW] if os.name == "nt" else [cv2.CAP_ANY]
+    for backend in backends:
+        for idx in (0, 1):
             cap = None
             try:
-                cap = cv2.VideoCapture(i, backend)
+                cap = cv2.VideoCapture(idx, backend)
                 if not cap.isOpened():
                     continue
-                probing = True
-                for (w, h) in candidates:
+                for (w, h) in PROBE_CANDIDATES:
                     try:
                         cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
                         ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-                        # 严格校验：尺寸必须精确匹配，否则视为不支持，绝不在坏状态下 read
                         if aw != w or ah != h:
                             continue
                         ret, frame = cap.read()
@@ -1174,13 +1132,15 @@ def _enumerate_inproc():
                             continue
                         if frame.shape[1] != w or frame.shape[0] != h:
                             continue
-                        key = (w, h)
-                        if key not in seen:
-                            seen.add(key)
-                            found.append(key)
+                        if (w, h) not in seen:
+                            seen.add((w, h))
+                            found.append((w, h))
+                            if on_found:
+                                on_found(w, h)
                     except Exception:
                         continue
-                break  # 第一个可用摄像头探测完毕即可
+                if found:
+                    return found  # 第一个可用摄像头探测完即可
             except Exception:
                 continue
             finally:
@@ -1189,16 +1149,109 @@ def _enumerate_inproc():
                         cap.release()
                     except Exception:
                         pass
-        if probing:
-            break
-    if not found:
-        # 兜底列表：保证界面始终有可选项（实际能否生效由摄像头决定���
-        # 兜底列表：仅横屏安全分辨率，绝不包含竖屏（竖屏需摄像头实测支持才出现）
-        found = [(1280, 720), (960, 540), (854, 480), (640, 480),
-                 (640, 360), (320, 240)]
-    # 横屏(w>=h)在前，组内按面积降序
-    found.sort(key=lambda it: (0 if it[0] >= it[1] else 1, -(it[0] * it[1])))
     return found
+
+
+def run_probe_worker(outfile):
+    """worker 子进程入口：只探测、写结果文件、立刻退出，绝不创建界面。
+
+    即便探测过程触发驱动级崩溃，死的也只是这个子进程，主程序毫发无伤。
+    """
+    res = []
+    try:
+        res = probe_resolutions_core()
+    except Exception:
+        res = []
+    try:
+        with open(outfile, "w", encoding="utf-8") as f:
+            json.dump([[w, h] for (w, h) in res], f)
+    except Exception:
+        pass
+    # 用 _exit 跳过 atexit / 析构，避免 OpenCV 释放阶段再次崩溃影响退出码
+    os._exit(0)
+
+
+def _probe_camera_resolutions_subprocess():
+    """在独立子进程中探测摄像头分辨率；打包后通过 exe 自调用实现。
+
+    部分摄像头驱动在 set 到不支持的尺寸后 read() 会直接让进程崩溃——这属于
+    C 层崩溃，Python 的 try/except 与 Qt 的异常兜底都拦不住。因此无论开发还是
+    打包环境，探测一律放到独立子进程；崩了也只是子进程，主程序继续走兜底列表。
+    """
+    tmpfile = os.path.join(tempfile.gettempdir(),
+                           "zhibodou_camres_%d.json" % os.getpid())
+    try:
+        if IS_FROZEN:
+            cmd = [sys.executable, PROBE_ARG, tmpfile]
+        else:
+            cmd = [sys.executable, os.path.abspath(__file__), PROBE_ARG, tmpfile]
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                creationflags=CREATE_NO_WINDOW)
+        try:
+            proc.wait(timeout=30)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return []
+        try:
+            with open(tmpfile, "r", encoding="utf-8") as f:
+                return [(int(w), int(h)) for w, h in json.load(f)]
+        except Exception:
+            return []   # 文件不存在 = 子进程崩溃，交由上层用兜底列表
+    except Exception:
+        return []
+    finally:
+        try:
+            if os.path.exists(tmpfile):
+                os.remove(tmpfile)
+        except Exception:
+            pass
+
+
+def enumerate_camera_resolutions():
+    """获取摄像头支持的分辨率列表 [(w, h), ...]（横屏在前、同组内按面积降序）。
+
+    优先级：磁盘缓存 -> 子进程探测 -> 安全静态兜底。
+    竖屏分辨率（如 720x1280）只有实测支持时才会出现在结果中。
+    """
+    cached = load_res_cache_from_disk()
+    if cached:
+        return cached
+
+    flag = _res_flag_path()
+    # 上次探测留下的标记还在 => 上次探测让进程崩了，这次不再冒险
+    if os.path.exists(flag):
+        print("[分辨率] 检测到上次探测异常退出，本次改用安全列表（删除 camres.json 可重新探测）")
+        try:
+            os.remove(flag)
+        except Exception:
+            pass
+        save_res_cache_to_disk(SAFE_FALLBACK_RES)
+        return list(SAFE_FALLBACK_RES)
+
+    try:
+        with open(flag, "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+    except Exception:
+        pass
+
+    res = _probe_camera_resolutions_subprocess()
+
+    try:
+        if os.path.exists(flag):
+            os.remove(flag)
+    except Exception:
+        pass
+
+    if not res:
+        print("[分辨率] 探测未返回结果，使用安全兜底列表")
+        res = list(SAFE_FALLBACK_RES)
+    res.sort(key=lambda it: (0 if it[0] >= it[1] else 1, -(it[0] * it[1])))
+    save_res_cache_to_disk(res)
+    return res
 
 
 class HostStream:
@@ -1286,46 +1339,56 @@ class HostStream:
         程序瞬间消失）。因此这里用 cap.get 验证分辨率是否真正生效；若不支持
         则放弃该尺寸、回退到摄像头原生分辨率（由 crop_to_portrait 负责裁竖屏）。
         """
-        backend_list = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+        want = (self.capture_w, self.capture_h)
+        # 若目标尺寸不在实测支持列表里，就完全不去 set —— 直接用原生分辨率。
+        # 对未经实测的尺寸调 set 正是此前进程瞬间消失的根源之一。
+        supported = get_cached_resolutions()
+        apply_size = want in supported
+        if not apply_size:
+            print(f"[主播] {want[0]}x{want[1]} 不在实测支持列表，改用摄像头原生分辨率")
+
+        # 只用 DSHOW（Windows 最稳）；CAP_MSMF 打开不存在的设备索引会直接崩进程，不碰。
+        backend_list = [cv2.CAP_DSHOW, cv2.CAP_ANY] if os.name == "nt" else [cv2.CAP_ANY]
         for backend in backend_list:
-            for i in range(5):
+            for i in (0, 1):
+                cap = None
                 try:
                     cap = cv2.VideoCapture(i, backend)
                     if not cap.isOpened():
+                        if cap is not None:
+                            cap.release()
                         continue
-                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_w)
-                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_h)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    # 验证分辨率是否真正生效（避免设置不支持尺寸后 read 崩溃）
-                    aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-                    ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-                    if aw != self.capture_w or ah != self.capture_h:
-                        # 摄像头不支持该尺寸：放弃此分辨率，不在此坏状态下 read
-                        cap.release()
-                        continue
+                    if apply_size:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.capture_w)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.capture_h)
+                        # 双保险：即便在支持列表里，也要回读确认真正生效
+                        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+                        if aw != self.capture_w or ah != self.capture_h:
+                            print(f"[主播] 设备 #{i} 未接受 {want[0]}x{want[1]}，回退原生分辨率")
+                            cap.release()
+                            cap = cv2.VideoCapture(i, backend)
+                            if not cap.isOpened():
+                                cap.release()
+                                continue
+                            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     ret, frame = cap.read()
-                    if ret and frame is not None and frame.shape[0] > 0 and np.mean(frame) > 5:
+                    if ret and frame is not None and frame.shape[0] > 0:
+                        aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+                        ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
                         print(f"[主播] 摄像头已打开 #{i} @ {aw}x{ah}")
                         return cap
                     cap.release()
-                except Exception:
+                except Exception as e:
+                    print(f"[主播] 打开摄像头 #{i} 异常: {e}")
                     try:
-                        cap.release()
+                        if cap is not None:
+                            cap.release()
                     except Exception:
                         pass
                     continue
-        # 回退：不强制竖屏尺寸，使用摄像头原生分辨率（crop_to_portrait 裁竖屏）
-        try:
-            cap = cv2.VideoCapture(0)
-            if cap.isOpened():
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                aw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-                ah = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-                print(f"[主播] 使用备用摄像头 0（原生分辨率 {aw}x{ah}，将裁切为竖屏输出）")
-                return cap
-        except Exception:
-            pass
-        print("[主播] 未找到摄像头")
+        print("[主播] 未找到可用摄像头")
         return None
 
     def _cap_reader(self):
@@ -1966,11 +2029,54 @@ class MainWin(QMainWindow):
             self.host_stream.capture_w = w
             self.host_stream.capture_h = h
 
-    def _wait_res_probe(self):
-        """等待后台分辨率探测线程结束，避免探测占着摄像头时与采集抢设备导致无预览。"""
+    def _on_res_probe_finished(self):
+        """探测线程结束：先摘掉引用再安排销毁，避免留下悬空的 Python 包装器。"""
         t = getattr(self, "_res_probe", None)
-        if t is not None and t.isRunning():
-            t.wait(4000)
+        self._res_probe = None
+        if t is not None:
+            try:
+                t.deleteLater()
+            except Exception:
+                pass
+
+    def _wait_res_probe(self, timeout_ms=32000):
+        """等待后台分辨率探测结束，避免探测子进程占着摄像头时与采集抢设备导致无预览。
+
+        探测已改为独立子进程，耗时可能到数十秒，因此这里用 processEvents 轮询等待，
+        保持界面可响应，而不是直接阻塞主线程。
+        """
+        t = getattr(self, "_res_probe", None)
+        if t is None:
+            return
+        # 线程结束后 deleteLater 会销毁底层 C++ 对象，此时任何方法调用都会抛
+        # RuntimeError；而 PyQt5 对槽函数内未捕获的异常默认直接 abort() 整个进程，
+        # 表现就是"点一下按钮软件闪退且无任何日志"。这里必须逐次防御。
+        def _alive_running(th):
+            try:
+                return th.isRunning()
+            except RuntimeError:
+                return False
+            except Exception:
+                return False
+
+        if not _alive_running(t):
+            self._res_probe = None
+            return
+        try:
+            self.lab_host_preview.setText("正在检测摄像头支持的分辨率，请稍候…")
+            QApplication.processEvents()
+        except Exception:
+            pass
+        deadline = time.time() + timeout_ms / 1000.0
+        while _alive_running(t) and time.time() < deadline:
+            try:
+                t.wait(100)
+            except RuntimeError:
+                break
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
 
     def copy_machine_code(self):
         mc = get_machine_code()
@@ -2142,7 +2248,10 @@ class MainWin(QMainWindow):
         # 这样启动/构建 UI 时不会在主线程同步打开摄像头，消除闪烁与卡顿
         self._res_probe = ResProbeThread()
         self._res_probe.done.connect(self._on_res_probed)
-        self._res_probe.finished.connect(self._res_probe.deleteLater)
+        # 注意：不能直接 finished -> deleteLater，否则 self._res_probe 会变成指向
+        # 已销毁 C++ 对象的悬空包装器，后续 isRunning() 抛 RuntimeError，
+        # 而 PyQt5 遇到槽内未捕获异常会直接 abort 进程（闪退且无日志）。
+        self._res_probe.finished.connect(self._on_res_probe_finished)
         self._res_probe.start()
 
         left_lay.addWidget(QLabel("抖音直播间链接 (全局推流)"))
@@ -2473,7 +2582,11 @@ class MainWin(QMainWindow):
     def enter_host_mode(self):
         """进入主播模式：打开摄像头预览（不要求授权，推流时才校验），预览画面立即可见。"""
         self.stack.setCurrentIndex(1)
-        self._ensure_host_preview()
+        try:
+            self._ensure_host_preview()
+        except Exception:
+            import traceback as _tb
+            _report_fatal("进入主播模式", _tb.format_exc())
 
     def _ensure_host_preview(self):
         """确保摄像头预览已开启：相机未就绪则打开；预览定时器始终运行（与推流解耦）。"""
@@ -2481,8 +2594,15 @@ class MainWin(QMainWindow):
             return
         self._wait_res_probe()
         if not self.host_stream.camera_ready:
-            if not self.host_stream.init_camera_only():
-                QMessageBox.critical(self, "错误", "摄像头启动失败，请检查设备！")
+            ok = False
+            try:
+                ok = self.host_stream.init_camera_only()
+            except Exception as e:
+                print(f"[主界面] 摄像头初始化异常: {e}")
+            if not ok:
+                self.lab_host_preview.setText("摄像头未就绪\n请检查设备是否被其他程序占用")
+                QMessageBox.critical(self, "错误",
+                                     "摄像头启动失败，请检查设备是否被其他程序占用！")
                 return
         self.timer.start(55)
 
@@ -2632,12 +2752,47 @@ def _report_fatal(stage, exc_text):
         pass
 
 
+def _install_excepthook():
+    """PyQt5 对槽函数内未捕获的 Python 异常会直接 qFatal/abort 整个进程——
+    表现为"点一下按钮就闪退，没有弹窗也没有日志"。abort 无法阻止，但 PyQt5 在
+    abort 前会先走 sys.excepthook，因此这里挂钩子把现场落盘，保证有据可查。"""
+    import traceback as _tb
+
+    _prev = sys.excepthook
+
+    def _hook(etype, value, tb):
+        try:
+            text = "".join(_tb.format_exception(etype, value, tb))
+            with open(os.path.join(_app_dir(), "crash.log"), "a", encoding="utf-8") as f:
+                f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " [未捕获异常]\n" + text + "\n\n")
+            print("[FATAL] 未捕获异常:\n" + text)
+        except Exception:
+            pass
+        try:
+            _prev(etype, value, tb)
+        except Exception:
+            pass
+
+    sys.excepthook = _hook
+
+
 if __name__ == "__main__":
     # 打包后若使用 multiprocessing，子进程会重新执行入口脚本导致无限开窗，必须先声明
     import multiprocessing
     multiprocessing.freeze_support()
 
+    # 分辨率探测 worker 模式：主程序以 `<exe> --probe-cam <outfile>` 自调用时，
+    # 只跑摄像头探测并把结果写入文件后立即退出，绝不创建任何界面。
+    # 这样即使摄像头驱动在探测中触发 C 层崩溃，死的也只是这个子进程。
+    # 必须放在创建 QApplication 之前。
+    if PROBE_ARG in sys.argv:
+        _i = sys.argv.index(PROBE_ARG)
+        _out = sys.argv[_i + 1] if len(sys.argv) > _i + 1 else ""
+        run_probe_worker(_out)
+        sys.exit(0)  # run_probe_worker 内部已 os._exit，此行仅作兜底
+
     import traceback as _tb
+    _install_excepthook()
     app = SafeApplication(sys.argv)
     try:
         win = MainWin()

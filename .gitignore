@@ -26,6 +26,10 @@ dist/
 # ---- 日志 ----
 *.log
 
+# ---- 运行期生成的本地状态（因机器而异，不入库）----
+camres.json
+camres.probing
+
 # ---- 本地数据 / 授权文件（用户级数据，不入库）----
 .ZhiBoDouData/
 license.lic
