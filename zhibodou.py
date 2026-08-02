@@ -512,12 +512,13 @@ class PyAVRtmpPusher:
                 if self.audio_getter is not None:
                     chunk = self.audio_getter()
                     while chunk is not None:
-                        arr = np.ascontiguousarray(chunk).reshape(-1)
+                        # PyAV 要求音频为二维数组 (声道数, 采样数)；麦克风为单声道，故 (1, N)
+                        arr = np.ascontiguousarray(chunk).reshape(self.audio_channels, -1)
                         af = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
                         af.sample_rate = self.audio_rate
                         af.pts = self.sample_count
                         af.time_base = abase
-                        self.sample_count += len(arr)
+                        self.sample_count += arr.shape[1]
                         for pkt in self.astream.encode(af):
                             self.container.mux(pkt)
                         chunk = self.audio_getter()
