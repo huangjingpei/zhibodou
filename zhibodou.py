@@ -83,9 +83,16 @@ def _build_rtmp_url():
 RTMP_PUSH_URL = _build_rtmp_url()
 
 # 编码参数（竖屏 720x1280 输出）
+# 注意：推公网时码率必须小于实际上行带宽，否则 TCP 发送缓冲会塞满并报
+#       [Errno 138]（ETIMEDOUT，写超时）。上行不足时请下调此值（如 1_000_000）。
 RTMP_VIDEO_BITRATE = 2_000_000      # 2 Mbps
 RTMP_AUDIO_BITRATE = 128_000        # 128 kbps
 RTMP_PRESET = "veryfast"
+
+# 连接与重连参数
+RTMP_OPEN_TIMEOUT = 10.0            # 建立连接超时（秒）
+RTMP_RW_TIMEOUT = 5.0               # 单次读写超时（秒），避免卡死在 mux 里
+RTMP_MAX_RECONNECT = 5              # 连接中断后的最大重连次数
 
 # ============================================================
 # ★ 观众端拉流仍走原中继服务器（如需改为 RTMP 拉流可在此调整）★
@@ -472,92 +479,270 @@ class PyAVRtmpPusher:
         self.frame_count = 0
         self.sample_count = 0
         self.error = None
+        # 断流/重连状态
+        self.fatal = False            # True 表示已彻底放弃（重连次数用尽）
+        self.reconnecting = False
+        self.reconnect_count = 0
+        self.max_reconnect = RTMP_MAX_RECONNECT
+        self.on_state = None          # 可选回调：on_state(state:str, detail:str)
+        self._last_frame = None       # 摄像头暂时无帧时复用，保持时间轴连续
+        self._log_ts = {}             # 日志限频： key -> [上次打印时间, 累计次数]
+        self._slow_ticks = 0          # 连续「发送慢于实时」的次数（上行带宽不足信号）
 
+    # ---------- 工具 ----------
+    def _log(self, key, msg, interval=5.0):
+        """同类日志限频打印，避免刷屏；重复次数在下一次打印时带出。"""
+        now = time.time()
+        rec = self._log_ts.get(key)
+        if rec is None:
+            self._log_ts[key] = [now, 0]
+            print(msg)
+            return
+        rec[1] += 1
+        if now - rec[0] >= interval:
+            extra = f"（{interval:.0f}s 内重复 {rec[1]} 次）" if rec[1] else ""
+            print(msg + extra)
+            rec[0] = now
+            rec[1] = 0
+
+    def _notify(self, state, detail=""):
+        if self.on_state:
+            try:
+                self.on_state(state, detail)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _is_network_error(exc):
+        """判断是否为「连接已废」类错误：需要重建连接而不是原地重试。
+        Windows 下 ETIMEDOUT=138 / ECONNRESET=10054 / EPIPE=32；FFmpeg 会映射成负 errno。"""
+        errno_val = getattr(exc, "errno", None)
+        if errno_val is not None and abs(int(errno_val)) in (
+                5, 32, 104, 138, 10053, 10054, 10060, 32104):
+            return True
+        text = str(exc).lower()
+        for kw in ("broken pipe", "connection reset", "timed out", "timeout",
+                   "end of file", "-138", "i/o error", "errno 138", "errno 32"):
+            if kw in text:
+                return True
+        return isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError, OSError))
+
+    # ---------- 连接管理 ----------
+    def _open_container(self):
+        """建立 RTMP 连接并创建音视频流。失败抛异常。"""
+        options = {
+            "flvflags": "no_duration_filesize",
+            # 写超时（微秒）：避免 TCP 发送缓冲塞满后一直卡死在 mux 里
+            "rw_timeout": str(int(RTMP_RW_TIMEOUT * 1_000_000)),
+            "tcp_nodelay": "1",
+        }
+        try:
+            self.container = av.open(self.url, mode="w", format="flv",
+                                     options=options,
+                                     timeout=(RTMP_OPEN_TIMEOUT, RTMP_RW_TIMEOUT))
+        except TypeError:
+            # 老版本 PyAV 不支持 timeout 参数
+            self.container = av.open(self.url, mode="w", format="flv", options=options)
+        # 视频流：限制 VBV，避免瞬时码率峰值把上行打爆
+        self.vstream = self.container.add_stream("libx264", rate=self.fps)
+        self.vstream.width = self.width
+        self.vstream.height = self.height
+        self.vstream.pix_fmt = "yuv420p"
+        self.vstream.bit_rate = self.video_bitrate
+        try:
+            self.vstream.codec_context.gop_size = self.fps * 2
+        except Exception:
+            pass
+        self.vstream.codec_context.options = {
+            "preset": self.preset,
+            "tune": "zerolatency",
+            "profile": "main",
+            "maxrate": str(self.video_bitrate),
+            "bufsize": str(self.video_bitrate * 2),
+            "sc_threshold": "0",
+        }
+        # 音频流（仅在提供了音频源时创建）
+        if self.audio_getter is not None:
+            self.astream = self.container.add_stream("aac", rate=self.audio_rate)
+            self.astream.layout = "mono" if self.audio_channels == 1 else "stereo"
+            self.astream.bit_rate = self.audio_bitrate
+            self.astream.codec_context.options = {"strict": "experimental"}
+        else:
+            self.astream = None
+
+    def _close_container(self, flush=False):
+        try:
+            if flush and self.container is not None:
+                if self.vstream is not None:
+                    for pkt in self.vstream.encode(None):
+                        self.container.mux(pkt)
+                if self.astream is not None:
+                    for pkt in self.astream.encode(None):
+                        self.container.mux(pkt)
+        except Exception:
+            pass
+        try:
+            if self.container is not None:
+                self.container.close()
+        except Exception:
+            pass
+        self.container = None
+        self.vstream = None
+        self.astream = None
+
+    def _reconnect(self):
+        """连接已废时重建：退避重试，重置时间轴。返回 True 表示重连成功。"""
+        self.reconnecting = True
+        self._close_container(flush=False)
+        while self.running and self.reconnect_count < self.max_reconnect:
+            self.reconnect_count += 1
+            delay = min(2 ** self.reconnect_count, 10)
+            print(f"[PyAV推流] 连接中断，{delay}s 后第 {self.reconnect_count}/{self.max_reconnect} 次重连…")
+            self._notify("reconnecting", f"第 {self.reconnect_count} 次重连")
+            for _ in range(int(delay * 10)):
+                if not self.running:
+                    self.reconnecting = False
+                    return False
+                time.sleep(0.1)
+            try:
+                self._open_container()
+            except Exception as e:
+                self.error = str(e)
+                print(f"[PyAV推流] 重连失败: {e}")
+                self._close_container(flush=False)
+                continue
+            # 重置时间轴，丢弃旧积压音频
+            self.frame_count = 0
+            self.sample_count = 0
+            self._drain_audio()
+            self._log_ts.clear()
+            self.reconnecting = False
+            self.reconnect_count = 0
+            print("[PyAV推流] 重连成功，已恢复推流")
+            self._notify("reconnected", "")
+            return True
+        self.reconnecting = False
+        self.fatal = True
+        self.running = False
+        self.error = self.error or "RTMP 连接中断且重连失败"
+        print(f"[PyAV推流] 重连次数用尽，已停止推流：{self.error}")
+        self._notify("fatal", self.error)
+        return False
+
+    def _drain_audio(self, limit=1000):
+        if self.audio_getter is None:
+            return
+        for _ in range(limit):
+            if self.audio_getter() is None:
+                break
+
+    # ---------- 启动 / 主循环 ----------
     def start(self, video_getter, audio_getter=None):
         self.video_getter = video_getter
         self.audio_getter = audio_getter
         self.running = True
+        self.fatal = False
+        self.reconnect_count = 0
         try:
-            self.container = av.open(self.url, mode="w", format="flv",
-                                     options={"flvflags": "no_duration_filesize"})
-            # 视频流
-            self.vstream = self.container.add_stream("libx264", rate=self.fps)
-            self.vstream.width = self.width
-            self.vstream.height = self.height
-            self.vstream.pix_fmt = "yuv420p"
-            self.vstream.bit_rate = self.video_bitrate
-            self.vstream.codec_context.options = {"preset": self.preset, "tune": "zerolatency"}
-            # 音频流（仅在提供了音频源时创建）
-            if self.audio_getter is not None:
-                self.astream = self.container.add_stream("aac", rate=self.audio_rate)
-                self.astream.layout = "mono" if self.audio_channels == 1 else "stereo"
-                self.astream.bit_rate = self.audio_bitrate
-                self.astream.codec_context.options = {"strict": "experimental"}
+            self._open_container()
             self.thread = threading.Thread(target=self._run, daemon=True)
             self.thread.start()
             return True
         except Exception as e:
             self.error = str(e)
             print(f"[PyAV推流] 启动失败: {e}")
-            try:
-                if self.container:
-                    self.container.close()
-            except Exception:
-                pass
-            self.container = None
+            self._close_container(flush=False)
+            self.running = False
             return False
+
+    def _encode_video(self, vbase):
+        frame = self.video_getter() if self.video_getter else None
+        if frame is None:
+            frame = self._last_frame
+        else:
+            self._last_frame = frame
+        if frame is None:
+            return
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        vf = av.VideoFrame.from_ndarray(rgb, format="rgb24")
+        vf.pts = self.frame_count
+        vf.time_base = vbase
+        self.frame_count += 1
+        for pkt in self.vstream.encode(vf):
+            self.container.mux(pkt)
+
+    def _encode_audio(self, abase, max_chunks):
+        """每轮最多消费 max_chunks 块音频；积压过多时丢弃最旧的，避免音画延迟越拖越大。"""
+        if self.audio_getter is None or self.astream is None:
+            return
+        for _ in range(max_chunks):
+            chunk = self.audio_getter()
+            if chunk is None:
+                return
+            # PyAV 要求音频为二维数组 (声道数, 采样数)；麦克风为单声道，故 (1, N)
+            arr = np.ascontiguousarray(chunk).reshape(self.audio_channels, -1)
+            af = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
+            af.sample_rate = self.audio_rate
+            af.pts = self.sample_count
+            af.time_base = abase
+            self.sample_count += arr.shape[1]
+            for pkt in self.astream.encode(af):
+                self.container.mux(pkt)
+        # 仍有积压说明消费不过来，直接丢弃旧数据保实时
+        dropped = 0
+        while dropped < 200 and self.audio_getter() is not None:
+            dropped += 1
+        if dropped:
+            self._log("audio_drop", f"[PyAV推流] 音频积压，丢弃 {dropped} 块以保持实时")
 
     def _run(self):
         vbase = Fraction(1, self.fps)
         abase = Fraction(1, self.audio_rate)
+        period = 1.0 / self.fps
+        # 每帧周期内理论产生的音频块数，留 3 倍余量
+        chunks_per_frame = max(1, int(self.audio_rate * period / max(1, AUDIO_BLOCK)) + 1)
+        max_chunks = chunks_per_frame * 3
+        next_tick = time.perf_counter()
         while self.running:
             try:
-                # 视频帧
-                frame = self.video_getter() if self.video_getter else None
-                if frame is not None:
-                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    vf = av.VideoFrame.from_ndarray(rgb, format="rgb24")
-                    vf.pts = self.frame_count
-                    vf.time_base = vbase
-                    self.frame_count += 1
-                    for pkt in self.vstream.encode(vf):
-                        self.container.mux(pkt)
-                # 音频块（尽量把队列清空，避免累积延迟）
-                if self.audio_getter is not None:
-                    chunk = self.audio_getter()
-                    while chunk is not None:
-                        # PyAV 要求音频为二维数组 (声道数, 采样数)；麦克风为单声道，故 (1, N)
-                        arr = np.ascontiguousarray(chunk).reshape(self.audio_channels, -1)
-                        af = av.AudioFrame.from_ndarray(arr, format="s16", layout="mono")
-                        af.sample_rate = self.audio_rate
-                        af.pts = self.sample_count
-                        af.time_base = abase
-                        self.sample_count += arr.shape[1]
-                        for pkt in self.astream.encode(af):
-                            self.container.mux(pkt)
-                        chunk = self.audio_getter()
+                t0 = time.perf_counter()
+                self._encode_video(vbase)
+                self._encode_audio(abase, max_chunks)
+                cost = time.perf_counter() - t0
+                # 发送/编码慢于实时，说明上行带宽或 CPU 不足
+                if cost > period:
+                    self._slow_ticks += 1
+                    if self._slow_ticks % 40 == 0:
+                        self._log("slow", f"[PyAV推流] 发送慢于实时（单帧耗时 {cost*1000:.0f}ms > "
+                                          f"{period*1000:.0f}ms），上行带宽或 CPU 可能不足，"
+                                          f"建议下调 RTMP_VIDEO_BITRATE / BASE_FPS")
                 else:
-                    time.sleep(1.0 / self.fps)
+                    self._slow_ticks = 0
+                # 墙钟节流：严格按 fps 推送，避免以 CPU 全速灌爆上行
+                next_tick += period
+                sleep = next_tick - time.perf_counter()
+                if sleep > 0:
+                    time.sleep(sleep)
+                elif sleep < -period * 5:
+                    next_tick = time.perf_counter()   # 落后太多，重置基准不追帧
             except Exception as e:
                 self.error = str(e)
-                print(f"[PyAV推流] 循环异常: {e}")
-                time.sleep(0.2)
+                if self._is_network_error(e):
+                    print(f"[PyAV推流] 连接异常: {e}")
+                    if not self._reconnect():
+                        break
+                    next_tick = time.perf_counter()
+                else:
+                    self._log("loop", f"[PyAV推流] 循环异常: {e}")
+                    time.sleep(0.05)
         # 收尾：flush 编码器
-        try:
-            if self.vstream:
-                for pkt in self.vstream.encode(None):
-                    self.container.mux(pkt)
-            if self.astream:
-                for pkt in self.astream.encode(None):
-                    self.container.mux(pkt)
-            self.container.close()
-        except Exception as e:
-            print(f"[PyAV推流] 收尾异常: {e}")
+        self._close_container(flush=True)
 
     def stop(self):
         self.running = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=3)
+        self.thread = None
 
 
 class FFmpegRtmpPusher:
@@ -679,6 +864,9 @@ class AudioHost(QObject):
         self.last_vol = 15
         # 推流音频队列：由 HostStream 注入；麦克风采集的 PCM 会放入此队列供 RTMP 推流使用
         self.push_queue = None
+        self._status_log_ts = 0.0     # 音频状态日志限频
+        self._status_count = 0
+        self._vol_emit_ts = 0.0       # 音量信号限频（跨线程 emit 太频繁会拖慢主线程）
 
     def set_mic_gain(self, val):
         self.mic_gain = max(1.0, min(2.2, val / 25))
@@ -691,33 +879,50 @@ class AudioHost(QObject):
         """设置推流音频队列（仅 PyAV 推流后端需要）。"""
         self.push_queue = q
 
-    def _audio_callback(self, indata, frames, time, status):
+    def _audio_callback(self, indata, frames, time_info, status):
+        # overflow 只表示上一块被丢过，本块数据依然有效：限频提示但继续处理，
+        # 不能直接 return，否则会连带丢掉正常音频并造成推流断续。
         if status:
-            print(f"[音频回调] 状态异常: {status}")
-            return
+            self._status_count += 1
+            now = time.time()
+            if now - self._status_log_ts >= 5.0:
+                extra = f"（5s 内共 {self._status_count} 次）" if self._status_count > 1 else ""
+                print(f"[音频回调] 状态异常: {status}{extra}，通常是 CPU 繁忙所致，已自动容错")
+                self._status_log_ts = now
+                self._status_count = 0
         try:
             if indata.shape[1] > 1:
                 data = np.mean(indata, axis=1)
             else:
                 data = indata.flatten()
+            data = data.astype(np.float32, copy=True)
 
             vol_level = np.max(np.abs(data))
             vol = int(vol_level * 200)
             vol = max(15, min(100, vol))
             self.last_vol = vol
-            self.vol_sig.emit(vol)
+            # 限频 emit：约 10 次/秒足够驱动音量条
+            now_v = time.time()
+            if now_v - self._vol_emit_ts >= 0.1:
+                self._vol_emit_ts = now_v
+                self.vol_sig.emit(vol)
 
             mask = np.abs(data) > NOISE_REDUCE_THRESHOLD
             data[~mask] *= 0.15
             data *= VOICE_BOOST_RATIO
 
             audio_data = (data * self.mic_gain * 32767).astype(np.int16)
-            # 若已配置推流音频队列，则放入队列（非阻塞，满则丢弃避免阻塞音频回调）
+            # 若已配置推流音频队列，则放入队列（非阻塞；满则丢弃最旧的一块，
+            # 保留最新音频，避免推流端消费不过来时音画延迟持续累积）
             if self.push_queue is not None:
                 try:
                     self.push_queue.put_nowait(audio_data)
                 except queue.Full:
-                    pass
+                    try:
+                        self.push_queue.get_nowait()
+                        self.push_queue.put_nowait(audio_data)
+                    except Exception:
+                        pass
         except Exception as e:
             print(f"[音频回调] 异常: {e}")
 
@@ -963,6 +1168,9 @@ class HostStream:
         self.cap_running = False
         self._cap_thread = None
         self.cap_frame_queue = deque(maxlen=MAX_VIDEO_BUFFER)
+        self.frame_seq = 0            # 采集帧序号，用于避免重复处理同一帧
+        self._pushed_seq = -1
+        self._pushed_frame = None
         self.audio_host = AudioHost()
         self.camera_ready = False
         self.bright = 50
@@ -982,6 +1190,7 @@ class HostStream:
         self.pusher = None
         self.push_backend = None      # "pyav" / "ffmpeg" / None
         self.push_error = None
+        self.push_state = "idle"      # idle / running / reconnecting / fatal
 
     def set_live_source(self, live_url):
         self.source_type = SOURCE_TYPE_LIVE
@@ -1097,6 +1306,7 @@ class HostStream:
             if ret and frame is not None:
                 with QMutexLocker(self.mutex):
                     self.cap_frame_queue.append(frame)
+                    self.frame_seq += 1
             now = time.time()
             sleep = frame_interval - (now - last_time)
             if sleep > 0:
@@ -1105,14 +1315,24 @@ class HostStream:
 
     # ---------------- RTMP 推流 ----------------
     def produce_push_frame(self):
-        """产出一帧用于推流的画面：美颜 -> 中心裁切竖屏 -> 缩放到 720x1280。"""
+        """产出一帧用于推流的画面：美颜 -> 中心裁切竖屏 -> 缩放到 720x1280。
+
+        同一帧只处理一次：摄像头未出新帧时直接复用上次结果，避免重复的
+        美颜/缩放运算白白吃掉 CPU（CPU 被占满会引发音频 input overflow）。
+        """
         with QMutexLocker(self.mutex):
             if not self.cap_frame_queue:
                 return None
+            seq = self.frame_seq
+            if seq == self._pushed_seq and self._pushed_frame is not None:
+                return self._pushed_frame
             raw = self.cap_frame_queue[-1]
         proc = beauty_process(raw, self.bright, self.contrast, self.sat, self.sharp)
         proc = crop_to_portrait(proc)
-        proc = cv2.resize(proc, (VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT), cv2.INTER_LANCZOS4)
+        proc = cv2.resize(proc, (VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT),
+                          interpolation=cv2.INTER_LINEAR)
+        self._pushed_seq = seq
+        self._pushed_frame = proc
         return proc
 
     def _pop_audio_chunk(self):
@@ -1134,12 +1354,26 @@ class HostStream:
                 return d
         return auds[0] if auds else name
 
+    def _on_push_state(self, state, detail):
+        """推流器状态回调（重连中 / 已恢复 / 彻底失败）。"""
+        self.push_state = state
+        if state == "fatal":
+            self.push_error = detail or "RTMP 连接中断"
+            self.running = False
+        elif state == "reconnected":
+            self.push_error = None
+            self.push_state = "running"
+        elif state == "reconnecting":
+            self.push_error = detail
+
     def _create_pusher(self):
         """根据运行环境自动选择推流后端：优先 PyAV（纯 Python），否则 ffmpeg。"""
         if HAVE_AV:
-            return PyAVRtmpPusher(
+            p = PyAVRtmpPusher(
                 RTMP_PUSH_URL, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
-                BASE_FPS, AUDIO_RATE, AUDIO_CHANNELS), "pyav"
+                BASE_FPS, AUDIO_RATE, AUDIO_CHANNELS)
+            p.on_state = self._on_push_state
+            return p, "pyav"
         ffmpeg_exe = find_ffmpeg()
         if ffmpeg_exe is not None:
             p = FFmpegRtmpPusher(
@@ -1189,6 +1423,9 @@ class HostStream:
         if not self.camera_ready:
             print("[主播] 摄像头未就绪")
             return False
+        # 0) 清理上一轮遗留的推流器（例如上次断流后未及时回收）
+        if self.pusher is not None:
+            self.stop_streaming()
         # 1) 选择推流后端
         self.pusher, self.push_backend = self._create_pusher()
         if self.pusher is None:
@@ -1214,6 +1451,8 @@ class HostStream:
             self.audio_host.stop()
             return False
         self.running = True
+        self.push_state = "running"
+        self.push_error = None
         print(f"[主播] RTMP 推流已启动（后端: {self.push_backend}）-> {RTMP_PUSH_URL}")
         return True
 
@@ -1231,6 +1470,7 @@ class HostStream:
             "source_type": self.source_type,
             "push_backend": self.push_backend,
             "push_error": self.push_error,
+            "push_state": self.push_state,
             "video_buffer": len(self.cap_frame_queue),
             "audio_queue": self.push_audio_queue.qsize() if self.push_audio_queue else 0,
         }
@@ -1246,6 +1486,7 @@ class HostStream:
             self.pusher = None
         self.audio_host.stop()
         self.push_error = None
+        self.push_state = "idle"
         print("[主播] 推流已停止（保留摄像头预览）")
 
     def stop(self):
@@ -1624,6 +1865,7 @@ class MainWin(QMainWindow):
 
         self.timer = QTimer()
         self.timer.timeout.connect(self.pull_host_frame)
+        self._last_push_state = "idle"   # 推流状态巡检用
         self.auth_timer = QTimer()
         self.auth_timer.timeout.connect(self.refresh_auth_status)
         self.auth_timer.start(1000)
@@ -2241,8 +2483,35 @@ class MainWin(QMainWindow):
     def update_host_vol(self, vol):
         self.host_vol_bar.set_vol(vol)
 
+    def _check_push_state(self):
+        """预览定时器顺带巡检推流状态：重连中提示、彻底断流则复位按钮。"""
+        st = getattr(self.host_stream, "push_state", "idle")
+        if st == self._last_push_state:
+            return
+        self._last_push_state = st
+        if st == "reconnecting":
+            self.lab_rtmp.setText(f"RTMP 连接中断，正在重连…\n{RTMP_PUSH_URL}")
+        elif st == "running":
+            backend = self.host_stream.push_backend or "未知"
+            self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{RTMP_PUSH_URL}")
+        elif st == "fatal":
+            err = self.host_stream.push_error or "连接中断"
+            self.host_stream.stop_streaming()
+            self._last_push_state = "idle"
+            self.btn_start_host.setText("开始直播推流")
+            self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
+            QMessageBox.warning(
+                self, "推流已断开",
+                f"RTMP 推流中断且重连失败：\n{err}\n\n"
+                f"常见原因：\n"
+                f"1) 上行带宽不足以承载 {RTMP_VIDEO_BITRATE // 1000} kbps，可下调码率或分辨率\n"
+                f"2) 服务器 {RTMP_SERVER_IP}:{RTMP_PORT} 不可达或已拒绝推流\n"
+                f"3) 网络防火墙/NAT 掐断了长连接\n\n"
+                f"预览画面不受影响，可稍后重新点击「开始直播推流」。")
+
     def pull_host_frame(self):
         try:
+            self._check_push_state()
             frame = self.host_stream.get_latest_frame()
             if frame is None:
                 return
@@ -2254,7 +2523,7 @@ class MainWin(QMainWindow):
             send_frame = crop_to_portrait(send_frame)
             pw = max(2, self.lab_host_preview.width())
             ph = max(2, self.lab_host_preview.height())
-            send_frame = cv2.resize(send_frame, (pw, ph), cv2.INTER_CUBIC)
+            send_frame = cv2.resize(send_frame, (pw, ph), interpolation=cv2.INTER_LINEAR)
             rgb = cv2.cvtColor(send_frame, cv2.COLOR_BGR2RGB)
             qimg = QImage(rgb.data, pw, ph, pw * 3, QImage.Format_RGB888)
             self.lab_host_preview.setPixmap(QPixmap.fromImage(qimg))
