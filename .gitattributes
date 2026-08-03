@@ -1,0 +1,12 @@
+# 统一 Python 源码换行符为 LF，避免不同工具写入导致整文件 diff 噪音
+*.py text eol=lf
+*.txt text eol=lf
+*.md text eol=lf
+.gitignore text eol=lf
+
+# 二进制文件不做任何转换
+*.exe binary
+*.dll binary
+*.png binary
+*.jpg binary
+*.ico binary

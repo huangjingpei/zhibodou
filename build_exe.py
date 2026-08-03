@@ -154,6 +154,20 @@ def main():
     distpath = os.path.join(tempfile.gettempdir(), "zhibodou_dist") if sandboxed else PROJECT_DIST
     os.makedirs(specpath, exist_ok=True)
 
+    # 提前清掉上一次的产物目录。PyInstaller 在 COLLECT 阶段才会去删它，那时若失败
+    # （产物正在运行被占用、或被安全策略拦截）只会抛一个没头没尾的退出码 1。
+    # 这里先删一次，失败就给出可操作的提示。
+    old_out = os.path.join(distpath, "zhibodou")
+    if os.path.isdir(old_out):
+        try:
+            shutil.rmtree(old_out)
+            print(f"[build] 已清理上次产物: {old_out}")
+        except Exception as e:
+            print(f"[build][错误] 无法删除上次的产物目录: {old_out}\n  {e}\n"
+                  "  常见原因：zhibodou.exe 仍在运行，或该目录被占用/被安全策略拦截。\n"
+                  "  请先关闭正在运行的程序，或手动删除该目录后重试。")
+            return 1
+
     opts = [
         ENTRY,
         "--name", "zhibodou",
@@ -211,8 +225,10 @@ def main():
         for name in os.listdir(distpath):
             s, d = os.path.join(distpath, name), os.path.join(PROJECT_DIST, name)
             if os.path.isdir(s):
+                # 原地覆盖而不是先删后拷：某些受限环境会拦截批量删除，
+                # dirs_exist_ok 可以完全绕开删除动作。
                 shutil.rmtree(d, ignore_errors=True)
-                shutil.copytree(s, d)
+                shutil.copytree(s, d, dirs_exist_ok=True)
             else:
                 shutil.copy2(s, d)
         print(f"[build] 已将产物从临时目录拷回 {PROJECT_DIST}")
