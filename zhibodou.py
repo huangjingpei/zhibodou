@@ -825,6 +825,7 @@ class FFmpegRtmpPusher:
         self.video_device = None
         self.audio_device = None
         self.beauty = None  # (bright, contrast, sat) 0-100，默认50
+        self._ff_err_path = None
 
     def configure_devices(self, video_device, audio_device, beauty=None):
         self.video_device = video_device
@@ -866,9 +867,15 @@ class FFmpegRtmpPusher:
             "-c:a", "aac", "-b:a", str(self.audio_bitrate),
             "-f", "flv", self.url,
         ]
+        # 把 ffmpeg 的 stderr 落盘到 ffmpeg_last.log，broken pipe 时可看到它真正的退出原因
+        self._ff_err_path = os.path.join(_app_dir(), "ffmpeg_last.log")
+        try:
+            ff_err = open(self._ff_err_path, "wb")
+        except Exception:
+            ff_err = subprocess.DEVNULL
         try:
             self.proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=ff_err,
                                          creationflags=CREATE_NO_WINDOW)
         except Exception as e:
             self.error = str(e)
@@ -916,7 +923,11 @@ class FFmpegRtmpPusher:
                     print(f"[ffmpeg推流] 帧字节数异常({len(data)}/{expected})，已跳过")
             except (BrokenPipeError, ValueError) as e:
                 self.error = f"写入 ffmpeg 失败: {e}"
-                print(f"[ffmpeg推流] 管道写入失败（ffmpeg 可能已退出）: {e}")
+                rc = self.proc.poll() if self.proc else None
+                print(f"[ffmpeg推流] 管道写入失败（ffmpeg 已退出, returncode={rc}）: {e}")
+                tail = self._read_ffmpeg_stderr_tail()
+                if tail:
+                    print(f"[ffmpeg推流] ffmpeg 退出前日志（详见 ffmpeg_last.log）:\n{tail}")
                 break
             except Exception as e:
                 self.error = f"写入 ffmpeg 失败: {e}"
@@ -933,6 +944,16 @@ class FFmpegRtmpPusher:
                 self.proc.stdin.close()
         except Exception:
             pass
+
+    def _read_ffmpeg_stderr_tail(self, max_bytes=3000):
+        """读取 ffmpeg 日志尾部，用于 broken pipe 时定位 ffmpeg 真正退出原因。"""
+        try:
+            with open(self._ff_err_path, "rb") as f:
+                data = f.read()
+            text = data.decode("utf-8", errors="ignore")
+            return text[-max_bytes:] if text else ""
+        except Exception:
+            return ""
 
     def stop(self):
         self.running = False
