@@ -485,9 +485,13 @@ def list_dshow_devices():
     if not exe:
         return [], []
     try:
-        out = subprocess.run([exe, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
-                             capture_output=True, text=True, timeout=20,
-                             creationflags=CREATE_NO_WINDOW).stderr
+        # 注意：不能用 text=True —— 中文 Windows 上默认按 GBK 解码，而 ffmpeg
+        # 设备名可能含 GBK 无法表示的字节，会触发 UnicodeDecodeError 且 .stderr 变 None。
+        # 改为先拿字节、再手动 utf-8 容错解码。
+        proc = subprocess.run([exe, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=20, creationflags=CREATE_NO_WINDOW)
+        out = (proc.stderr or b"").decode("utf-8", errors="replace")
     except Exception as e:
         print(f"[dshow] 列举设备失败: {e}")
         return [], []
