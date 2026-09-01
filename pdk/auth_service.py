@@ -37,7 +37,7 @@ class PdkSettings:
     @classmethod
     def from_env(cls) -> "PdkSettings":
         # 与 pdk_client.py::_demo 保持一致：未配置时使用 appId=2。
-        raw_app_id = (os.getenv("PDK_APP_ID") or "2").strip()
+        raw_app_id = (os.getenv("PDK_APP_ID") or "3").strip()
         try:
             app_id = int(raw_app_id)
         except ValueError as exc:

@@ -721,7 +721,7 @@ def _demo() -> None:
     设置 ``PDK_PHONE`` 与 ``PDK_PASSWORD`` 后，登录及后续鉴权操作才会演示；
     DEVICE_LICENSE 业务还需提供 ``PDK_CARD_KEY``（新设备激活即“带卡密登录”）。
     """
-    app_id = int(os.getenv("PDK_APP_ID", "2"))
+    app_id = int(os.getenv("PDK_APP_ID", "3"))
     base_url = os.getenv("PDK_BASE_URL", "http://127.0.0.1:8080")
     phone = os.getenv("PDK_PHONE", "13800000000")
     password = os.getenv("PDK_PASSWORD", "13800000000")
