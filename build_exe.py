@@ -24,6 +24,7 @@
     dist/zhibodou.exe            （--onefile）
 """
 import argparse
+import ast
 import os
 import shutil
 import subprocess
@@ -74,6 +75,51 @@ EXCLUDES = [
     "notebook", "pytest", "pydoc_data", "lib2to3",
     "PySide2", "PySide6", "PyQt6",
 ]
+
+
+def project_modules():
+    """枚举 7 个业务包下的全部模块（含包自身与其子模块），返回点分模块名。
+
+    PyInstaller 只把「静态分析能追踪到」的模块打进 PYZ 归档。像 core.net 这种
+    当前无人 import 的预留模块会被自动剔除 —— 将来一旦被引用，就会在打包版
+    报 ImportError，而开发环境毫无症状。所以这里逐个子模块显式声明。
+    """
+    mods = []
+    for pkg in PROJECT_PACKAGES:
+        root = os.path.join(HERE, pkg)
+        if not os.path.isdir(root):
+            continue
+        for dirpath, _, filenames in os.walk(root):
+            prefix = os.path.relpath(dirpath, HERE).replace("\\", "/").replace("/", ".")
+            for f in filenames:
+                if not f.endswith(".py"):
+                    continue
+                stem = f[:-3]
+                mods.append(prefix if stem == "__init__" else f"{prefix}.{stem}")
+    return sorted(set(mods))
+
+
+def config_declared_modules():
+    """从 core/config.py 读取 PROJECT_MODULES 声明清单。
+
+    用 AST 静态取值而不是 import —— core.config 在导入时会创建用户数据目录，
+    那是运行期行为，构建脚本不该触发它。
+    """
+    path = os.path.join(HERE, "core", "config.py")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=path)
+    except Exception:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "PROJECT_MODULES":
+                    try:
+                        return list(ast.literal_eval(node.value))
+                    except Exception:
+                        return None
+    return None
 
 
 def die(msg):

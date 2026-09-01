@@ -114,3 +114,27 @@ SOURCE_TYPE_LIVE = "live"
 
 # 分辨率探测 worker 的命令行开关：exe 以该参数自调用时只探测、不启动界面
 PROBE_ARG = "--probe-cam"
+
+# 打包自检开关：exe 以该参数启动时逐个 import 全部项目模块并打印结果，用于
+# 验证打包产物（尤其是 PYZ 归档）是否完整，不启动界面
+SELFCHECK_ARG = "--selfcheck"
+
+# ============================================================
+# 项目模块清单（按功能划分的包）
+# ============================================================
+# 仅记录模块名，不做导入 —— 供 --selfcheck 自检遍历，以及打包脚本对照目录结构。
+# 新增模块时记得同步这里，否则打包能过（静态分析追踪得到）但自检覆盖不到。
+PROJECT_PACKAGES = ("core", "capture", "processing", "streaming",
+                    "sessions", "licensing", "ui", "ui.panels")
+PROJECT_MODULES = (
+    "core.config", "core.runtime", "core.diagnostics", "core.net",
+    "capture.devices", "capture.audio", "capture.resolution",
+    "processing.image", "processing.live",
+    "streaming.ffmpeg_tool", "streaming.pyav_pusher",
+    "streaming.ffmpeg_pusher", "streaming.factory",
+    "sessions.host", "sessions.client",
+    "licensing.auth",
+    "ui.widgets", "ui.app", "ui.main_window",
+    "ui.panels.base", "ui.panels.home", "ui.panels.auth",
+    "ui.panels.host", "ui.panels.client",
+)
