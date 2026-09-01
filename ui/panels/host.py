@@ -19,8 +19,14 @@ from capture.resolution import get_cached_resolutions, ResProbeThread
 from core.config import (RTMP_PUSH_URL, RTMP_VIDEO_BITRATE, RTMP_SERVER_IP, RTMP_PORT)
 from processing.image import crop_to_portrait, beauty_process
 from ui.widgets import VolumeBar
+from ui import theme
 from ui.panels.base import Panel
 from ui.panels.auth import AuthPanel
+
+try:
+    from pdk import auth_service as pdk_auth
+except Exception:  # pragma: no cover
+    pdk_auth = None
 
 
 class HostPanel(Panel):
@@ -47,14 +53,15 @@ class HostPanel(Panel):
         left_lay.setSpacing(10)
 
         self.btn_start_host = QPushButton("开始直播推流")
+        theme.set_button_role(self.btn_start_host, "primary")
         self.btn_start_host.setFixedHeight(40)
-        self.btn_start_host.setStyleSheet("font-size:15px;font-weight:bold;")
+        self.btn_start_host.setFont(theme.font(theme.FS_BODY + 1, bold=True))
         self.btn_start_host.clicked.connect(self.toggle_cam)
         left_lay.addWidget(self.btn_start_host)
 
         self.lab_rtmp = QLabel(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
         self.lab_rtmp.setWordWrap(True)
-        self.lab_rtmp.setStyleSheet("font-size:11px;color:#00ccff;")
+        self.lab_rtmp.setStyleSheet(theme.label_style(theme.FS_SMALL, theme.CYAN))
         left_lay.addWidget(self.lab_rtmp)
 
         left_lay.addWidget(QLabel("选择麦克风设备"))
@@ -134,7 +141,7 @@ class HostPanel(Panel):
         beauty_lay.setContentsMargins(10, 10, 10, 10)
         beauty_lay.setSpacing(12)
         title_lab = QLabel("美颜调节")
-        title_lab.setStyleSheet("color:#00ccff;font-size:14px;font-weight:bold;")
+        title_lab.setStyleSheet(theme.section_title_style())
         beauty_lay.addWidget(title_lab)
 
         self.slid_br = QSlider(Qt.Horizontal)
@@ -169,7 +176,6 @@ class HostPanel(Panel):
         # 授权区：内嵌 AuthPanel（机器码/激活码），授权状态通过 on_state 回传
         self.auth_panel = AuthPanel(
             self.win,
-            phone_getter=lambda: self.win.home_panel.edit_phone.text(),
             on_state=lambda ok: self.btn_start_host.setEnabled(ok),
         )
         left_lay.addWidget(self.auth_panel.build(left_host))
@@ -185,7 +191,9 @@ class HostPanel(Panel):
         right_lay.setAlignment(Qt.AlignCenter)
         self.lab_host_preview = QLabel("预览画面")
         self.lab_host_preview.setFixedSize(360, 640)
-        self.lab_host_preview.setStyleSheet("border:2px solid #2d88ff;background:#000;color:#888;border-radius:8px;font-size:16px;")
+        self.lab_host_preview.setStyleSheet(
+            f"border:2px solid {theme.BORDER_FOCUS};background:#000;"
+            f"color:{theme.TEXT_FAINT};border-radius:8px;font-size:16px;")
         self.lab_host_preview.setAlignment(Qt.AlignCenter)
         right_lay.addWidget(self.lab_host_preview)
 
@@ -196,25 +204,14 @@ class HostPanel(Panel):
         host_scroll.setWidgetResizable(True)
         host_scroll.setFrameShape(QScrollArea.NoFrame)
         host_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        host_scroll.verticalScrollBar().setStyleSheet("""
-            QScrollBar:vertical {
-                background: transparent;
-                width: 8px;
-                margin: 4px 4px 4px 0px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: #2d88ff;
-                min-height: 40px;
-                border-radius: 4px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: transparent;
-            }
-        """)
+        host_scroll.verticalScrollBar().setStyleSheet(
+            "QScrollBar:vertical {background: transparent;width: 8px;"
+            "margin: 4px 4px 4px 0px;border-radius: 4px;}"
+            "QScrollBar::handle:vertical {background: " + theme.BORDER_FOCUS + ";"
+            "min-height: 40px;border-radius: 4px;}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {height: 0px;}"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {background: transparent;}"
+        )
         left_host_panel = QFrame()
         left_host_panel.setFixedWidth(328)
         left_host_panel_lay = QVBoxLayout(left_host_panel)
@@ -332,15 +329,17 @@ class HostPanel(Panel):
         if not url:
             QMessageBox.warning(self.lab_host_preview, "提示", "请输入抖音直播间链接！")
             return
-        from licensing.auth import get_auth_info
-        auth_ok, _, _, _ = get_auth_info()
-        if not auth_ok:
+        if pdk_auth is None or not pdk_auth.is_authenticated():
             QMessageBox.warning(self.lab_host_preview, "错误", "未授权或授权已过期!")
             return
+        self.win.run_authorized(lambda: self._start_live_source(url))
+
+    def _start_live_source(self, url):
+        from PyQt5.QtWidgets import QMessageBox
         # 若正在推流，先停推流（保留摄像头）
         if self.host_stream.running:
             self.host_stream.stop_streaming()
-            self.btn_start_host.setText("开始直播推流")
+            self._set_stream_button(False)
         ok = self.host_stream.set_live_source(url)
         if ok:
             self.ensure_preview()
@@ -350,7 +349,7 @@ class HostPanel(Panel):
             if not self.host_stream.start_streaming():
                 QMessageBox.critical(self.lab_host_preview, "错误", "推流服务启动失败！")
                 return
-            self.btn_start_host.setText("停止直播推流")
+            self._set_stream_button(True)
             QMessageBox.information(self.lab_host_preview, "成功", "已切换线上直播源，将作为 RTMP 推流画面")
         else:
             QMessageBox.critical(self.lab_host_preview, "失败", "链接解析失败，请检查链接有效性")
@@ -359,18 +358,26 @@ class HostPanel(Panel):
         from PyQt5.QtWidgets import QMessageBox
         if self.host_stream.running:
             self.host_stream.stop_streaming()
-            self.btn_start_host.setText("开始直播推流")
+            self._set_stream_button(False)
         self.host_stream.set_cam_source()
         self.ensure_preview()
         QMessageBox.information(self.lab_host_preview, "切换", "已切回摄像头采集")
 
     def toggle_cam(self):
         from PyQt5.QtWidgets import QMessageBox
-        from licensing.auth import get_auth_info
-        auth_ok, _, _, _ = get_auth_info()
-        if not auth_ok:
+        if pdk_auth is None or not pdk_auth.is_authenticated():
             QMessageBox.warning(self.lab_host_preview, "错误", "未授权或授权已过期!")
             return
+        if not self.host_stream.running:
+            self.win.run_authorized(self._start_camera_stream)
+        else:
+            # 停止推流不需要网络授权，保证授权服务异常时仍能立即止流。
+            self.host_stream.stop_streaming()
+            self._set_stream_button(False)
+            self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
+
+    def _start_camera_stream(self):
+        from PyQt5.QtWidgets import QMessageBox
         if not self.host_stream.running:
             # 确保预览已开启（摄像头已打开），再启动推流
             self.ensure_preview()
@@ -380,17 +387,16 @@ class HostPanel(Panel):
             if not self.host_stream.start_streaming():
                 QMessageBox.critical(self.lab_host_preview, "错误", "推流服务启动失败!")
                 return
-            self.btn_start_host.setText("停止直播推流")
+            self._set_stream_button(True)
             backend = self.host_stream.push_backend or "未知"
             self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{RTMP_PUSH_URL}")
-        else:
-            # 停止推流，但保留摄像头与预览画面
-            self.host_stream.stop_streaming()
-            self.btn_start_host.setText("开始直播推流")
-            self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
 
     def update_vol(self, vol):
         self.host_vol_bar.set_vol(vol)
+
+    def _set_stream_button(self, running):
+        self.btn_start_host.setText("停止直播推流" if running else "开始直播推流")
+        theme.set_button_role(self.btn_start_host, "danger" if running else "primary")
 
     def check_push_state(self):
         """预览定时器顺带巡检推流状态：重连中提示、彻底断流则复位按钮。"""
@@ -407,7 +413,7 @@ class HostPanel(Panel):
             err = self.host_stream.push_error or "连接中断"
             self.host_stream.stop_streaming()
             self._last_push_state = "idle"
-            self.btn_start_host.setText("开始直播推流")
+            self._set_stream_button(False)
             self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
             from PyQt5.QtWidgets import QMessageBox
             QMessageBox.warning(
@@ -446,3 +452,18 @@ class HostPanel(Panel):
         """返回首页时清空并复位预览画面（由 MainWin.return_home 调用）。"""
         self.lab_host_preview.clear()
         self.lab_host_preview.setText("预览画面")
+
+    def shutdown(self):
+        """窗口退出前停止异步探测，避免下一次登录仍占用摄像头。"""
+        probe = getattr(self, "_res_probe", None)
+        self._res_probe = None
+        if probe is None:
+            return
+        try:
+            if probe.isRunning():
+                probe.requestInterruption()
+                probe.wait(1500)
+        except RuntimeError:
+            pass
+        except Exception as exc:
+            print(f"[分辨率] 退出时停止探测失败: {exc}")

@@ -9,7 +9,8 @@
     processing/  流处理（美颜/裁竖屏、抖音直播源解析）
     streaming/   推流（PyAV 首选 / ffmpeg 回退 / 后端自动选择）
     sessions/    业务编排（主播会话、观众会话）
-    licensing/   授权激活
+    licensing/   旧版授权兼容
+    pdk/         PDK 登录、激活与设备许可证
     ui/          界面（主窗口、控件、应用类）
 
 用法（在装齐依赖的环境中执行）：
@@ -38,7 +39,7 @@ PROJECT_DIST = os.path.join(HERE, "dist")
 
 # 项目包（PyInstaller 静态分析一般能追踪到，但显式声明可确保万无一失）
 PROJECT_PACKAGES = ["core", "capture", "processing", "streaming",
-                    "sessions", "licensing", "ui"]
+                    "sessions", "licensing", "pdk", "ui"]
 
 # 运行期必需、但 PyInstaller 静态分析可能漏掉的模块
 HIDDEN_IMPORTS = [
@@ -47,6 +48,7 @@ HIDDEN_IMPORTS = [
     "sounddevice",
     "pyvirtualcam",
     "requests",
+    "cryptography",
     "numpy",
     "PyQt5.QtCore",
     "PyQt5.QtGui",
@@ -147,6 +149,7 @@ def check_deps():
         "numpy": "numpy",
         "sounddevice": "sounddevice",
         "requests": "requests",
+        "cryptography": "cryptography",
         "streamlink": "streamlink",
         "pyvirtualcam": "pyvirtualcam",
     }

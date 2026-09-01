@@ -65,21 +65,39 @@ def main():
         return _run_selfcheck()
 
     import traceback
+    from PyQt5.QtWidgets import QDialog
 
     from core.diagnostics import install_excepthook, report_fatal
     from ui.app import SafeApplication
+    from ui.login_window import LoginWindow
     from ui.main_window import MainWin
 
     install_excepthook()
     app = SafeApplication(sys.argv)
-    try:
-        win = MainWin()
-        win.show()
-    except Exception:
-        # 主窗口构造期的异常不在 Qt 事件循环内，SafeApplication.notify 兜不住
-        report_fatal("主窗口初始化", traceback.format_exc())
-        return 1
-    return app.exec_()
+    # 登录 → 主窗口 → 退出登录 循环：点「退出登录」会回到登录窗，关闭登录窗则退出。
+    while True:
+        login = LoginWindow()
+        try:
+            if login.exec_() != QDialog.Accepted:
+                # 用户主动关闭登录窗 → 退出程序
+                return 0
+        finally:
+            login.deleteLater()
+        try:
+            win = MainWin()
+            win.show()
+        except Exception:
+            # 主窗口构造期的异常不在 Qt 事件循环内，SafeApplication.notify 兜不住
+            report_fatal("主窗口初始化", traceback.format_exc())
+            return 1
+        app.exec_()
+        # 主窗口关闭后：若是「退出登录」则回到登录循环，否则退出程序
+        return_to_login = bool(getattr(win, "_logout_requested", False))
+        win.deleteLater()
+        app.processEvents()
+        if not return_to_login:
+            break
+    return 0
 
 
 if __name__ == "__main__":

@@ -7,6 +7,9 @@
 import os
 
 
+APP_VERSION = "1.7.0"
+
+
 # ============================================================
 # ★ 核心配置（天翼云直推模式）★
 # ============================================================
@@ -125,7 +128,7 @@ SELFCHECK_ARG = "--selfcheck"
 # 仅记录模块名，不做导入 —— 供 --selfcheck 自检遍历，以及打包脚本对照目录结构。
 # 新增模块时记得同步这里，否则打包能过（静态分析追踪得到）但自检覆盖不到。
 PROJECT_PACKAGES = ("core", "capture", "processing", "streaming",
-                    "sessions", "licensing", "ui", "ui.panels")
+                    "sessions", "licensing", "pdk", "ui", "ui.panels")
 PROJECT_MODULES = (
     "core.config", "core.runtime", "core.diagnostics", "core.net",
     "capture.devices", "capture.audio", "capture.resolution",
@@ -134,7 +137,9 @@ PROJECT_MODULES = (
     "streaming.ffmpeg_pusher", "streaming.factory",
     "sessions.host", "sessions.client",
     "licensing.auth",
-    "ui.widgets", "ui.app", "ui.main_window",
+    "pdk.pdk_client", "pdk.auth_service",
+    "ui.widgets", "ui.app", "ui.theme", "ui.icons", "ui.brand_banner",
+    "ui.login_window", "ui.main_window",
     "ui.panels.base", "ui.panels.home", "ui.panels.auth",
     "ui.panels.host", "ui.panels.client",
 )

@@ -48,7 +48,9 @@ class ResProbeThread(QThread):
     done = pyqtSignal(list)
     def run(self):
         global _RES_CACHE
-        res = enumerate_camera_resolutions()
+        res = enumerate_camera_resolutions(cancelled=self.isInterruptionRequested)
+        if self.isInterruptionRequested():
+            return
         _RES_CACHE = res
         self.done.emit(res)
 
@@ -168,7 +170,7 @@ def run_probe_worker(outfile):
     os._exit(0)
 
 
-def _probe_camera_resolutions_subprocess():
+def _probe_camera_resolutions_subprocess(cancelled=None):
     """在独立子进程中探测摄像头分辨率；打包后通过 exe 自调用实现。
 
     部分摄像头驱动在 set 到不支持的尺寸后 read() 会直接让进程崩溃——这属于
@@ -185,9 +187,12 @@ def _probe_camera_resolutions_subprocess():
         proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL,
                                 stderr=subprocess.DEVNULL,
                                 creationflags=CREATE_NO_WINDOW)
-        try:
-            proc.wait(timeout=30)
-        except Exception:
+        deadline = time.monotonic() + 30.0
+        while proc.poll() is None and time.monotonic() < deadline:
+            if cancelled is not None and cancelled():
+                break
+            time.sleep(0.05)
+        if proc.poll() is None:
             try:
                 proc.kill()
             except Exception:
@@ -208,7 +213,7 @@ def _probe_camera_resolutions_subprocess():
             pass
 
 
-def enumerate_camera_resolutions():
+def enumerate_camera_resolutions(cancelled=None):
     """获取摄像头支持的分辨率列表 [(w, h), ...]（横屏在前、同组内按面积降序）。
 
     优先级：磁盘缓存 -> 子进程探测 -> 安全静态兜底。
@@ -235,7 +240,10 @@ def enumerate_camera_resolutions():
     except Exception:
         pass
 
-    res = _probe_camera_resolutions_subprocess()
+    res = _probe_camera_resolutions_subprocess(cancelled=cancelled)
+
+    if cancelled is not None and cancelled():
+        return list(SAFE_FALLBACK_RES)
 
     try:
         if os.path.exists(flag):

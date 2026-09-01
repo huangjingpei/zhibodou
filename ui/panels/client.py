@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
     QComboBox, QSlider, QFrame, QScrollArea,
 )
 from core.config import (RELAY_SERVER_IP, RELAY_CLIENT_VIDEO_PORT, RELAY_CLIENT_AUDIO_PORT)
+from ui import theme
 from ui.widgets import VolumeBar
 from ui.panels.base import Panel
 
@@ -34,7 +35,7 @@ class ClientPanel(Panel):
         leftc_lay.setSpacing(10)
 
         self.tip_auto = QLabel(f"正在连接服务器 {RELAY_SERVER_IP}:{RELAY_CLIENT_VIDEO_PORT}...")
-        self.tip_auto.setStyleSheet("color:#00ff99;font-size:14px;font-weight:bold;")
+        self.tip_auto.setStyleSheet(theme.label_style(theme.FS_H2, theme.GREEN, bold=True))
         leftc_lay.addWidget(self.tip_auto)
 
         leftc_lay.addWidget(QLabel("子机独立解析（仅本机生效）"))
@@ -42,6 +43,7 @@ class ClientPanel(Panel):
         self.client_live_input.setPlaceholderText("粘贴抖音链接，本地单独拉流")
         leftc_lay.addWidget(self.client_live_input)
         client_parse_btn = QPushButton("启动本地直播流")
+        theme.set_button_role(client_parse_btn, "primary")
         client_parse_btn.clicked.connect(self.on_local_parse)
         leftc_lay.addWidget(client_parse_btn)
         leftc_lay.addSpacing(10)
@@ -73,7 +75,7 @@ class ClientPanel(Panel):
         client_beauty_lay.setContentsMargins(10, 10, 10, 10)
         client_beauty_lay.setSpacing(12)
         client_title_lab = QLabel("观众美颜调节")
-        client_title_lab.setStyleSheet("color:#00ccff;font-size:14px;font-weight:bold;")
+        client_title_lab.setStyleSheet(theme.section_title_style())
         client_beauty_lay.addWidget(client_title_lab)
 
         self.c_br = QSlider(Qt.Horizontal)
@@ -123,7 +125,9 @@ class ClientPanel(Panel):
         right_layc.setAlignment(Qt.AlignCenter)
         self.lab_client_preview = QLabel("等待连接...")
         self.lab_client_preview.setFixedSize(360, 640)
-        self.lab_client_preview.setStyleSheet("border:2px solid #2d88ff;background:#000;color:#888;border-radius:8px;font-size:16px;")
+        self.lab_client_preview.setStyleSheet(
+            f"border:2px solid {theme.BORDER_FOCUS};background:#000;"
+            f"color:{theme.TEXT_FAINT};border-radius:8px;font-size:16px;")
         self.lab_client_preview.setAlignment(Qt.AlignCenter)
         right_layc.addWidget(self.lab_client_preview)
 
@@ -133,25 +137,14 @@ class ClientPanel(Panel):
         client_scroll.setWidgetResizable(True)
         client_scroll.setFrameShape(QScrollArea.NoFrame)
         client_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        client_scroll.verticalScrollBar().setStyleSheet("""
-            QScrollBar:vertical {
-                background: transparent;
-                width: 8px;
-                margin: 4px 4px 4px 0px;
-                border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: #2d88ff;
-                min-height: 40px;
-                border-radius: 4px;
-            }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-                height: 0px;
-            }
-            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
-                background: transparent;
-            }
-        """)
+        client_scroll.verticalScrollBar().setStyleSheet(
+            "QScrollBar:vertical {background: transparent;width: 8px;"
+            "margin: 4px 4px 4px 0px;border-radius: 4px;}"
+            "QScrollBar::handle:vertical {background: " + theme.BORDER_FOCUS + ";"
+            "min-height: 40px;border-radius: 4px;}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {height: 0px;}"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {background: transparent;}"
+        )
         left_client_panel = QFrame()
         left_client_panel.setFixedWidth(328)
         left_client_panel_lay = QVBoxLayout(left_client_panel)
