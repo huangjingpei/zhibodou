@@ -109,7 +109,7 @@ HOST_MODE = "rtmp"
 #   如果 mediamtx.yml 里给路径设了 publishUser/publishPass 发布鉴权，
 #   请把账号密码填到 RTMP_PUBLISH_USER / RTMP_PUBLISH_PASS。
 # ============================================================
-RTMP_SERVER_IP = "125.122.155.133"
+RTMP_SERVER_IP = "43.248.187.207"
 RTMP_PORT = 1935
 RTMP_APP = "live"
 RTMP_STREAM_KEY = "zhibodou"
