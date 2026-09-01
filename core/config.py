@@ -131,6 +131,7 @@ PROJECT_PACKAGES = ("core", "capture", "processing", "streaming",
                     "sessions", "licensing", "pdk", "ui", "ui.panels")
 PROJECT_MODULES = (
     "core.config", "core.runtime", "core.diagnostics", "core.net",
+    "core.credentials",
     "capture.devices", "capture.audio", "capture.resolution",
     "processing.image", "processing.live",
     "streaming.ffmpeg_tool", "streaming.pyav_pusher",

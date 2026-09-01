@@ -5,8 +5,7 @@
 `pdk.auth_service.is_authenticated()` 决定。本面板只展示当前会话的脱敏信息，
 不接触 Token、设备 ID 等敏感字段。
 
-对应 zhibodou-ai 项目 `src/gui/dialogs.py` 的「PDK 账户 / 设备许可证」
-弹窗，但 PyQt5 化并嵌入主播页左侧控制区。
+账户资料与设备许可证状态以 PyQt5 面板形式嵌入主播页左侧控制区。
 """
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QLabel, QPushButton, QMessageBox,

@@ -44,7 +44,7 @@ class HomePanel(Panel):
         lab_title.setStyleSheet(theme.label_style(theme.FS_DISPLAY, theme.CYAN, bold=True))
         hero_lay.addWidget(lab_title)
 
-        lab_subtitle = QLabel("高清直播推流系统")
+        lab_subtitle = QLabel("矩阵转发 · 高清直播推流系统")
         lab_subtitle.setAlignment(Qt.AlignCenter)
         lab_subtitle.setFont(theme.font(theme.FS_H2))
         lab_subtitle.setStyleSheet(theme.label_style(theme.FS_H2, theme.TEXT_MUTED))

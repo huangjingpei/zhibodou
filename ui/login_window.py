@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
-"""PDK 登录 / 设备激活窗口（PyQt5 版）。
+"""矩阵转发客户端的 PDK 登录 / 设备激活窗口（PyQt5 版）。
 
 布局：左侧 400 渐变 banner + 右侧 580 操作区（登录、激活 tab + 版本号）。
-风格：与 zhibodou-ai 项目 `src/gui/login.py` 一致的深海蓝配色、圆角输入框、
-      圆角按钮、tab 下划线跟随。
+风格：与矩阵转发主控台统一的深海蓝配色、圆角输入框、圆角按钮和 tab 下划线。
 业务：PDK 公共配置 → 业务发现 → 登录 → 会话校验 → 资料 / 设备许可证，
       全部委托 `pdk.auth_service`，本模块不接触 Token 与加密细节。
 
@@ -22,6 +21,7 @@ from ui import theme
 from ui.brand_banner import BrandBanner
 from ui.icons import ICON_SIZE, icon_pixmap
 from core.config import APP_VERSION
+from core.credentials import save_credentials, load_credentials
 
 
 # PDK 客户端依赖 requests + cryptography。缺任一依赖时**不能**让整个登录界面
@@ -231,6 +231,9 @@ class LoginWindow(QDialog):
         self.auth_result = None
         self._worker = None            # 见 AuthWorker 的 GC 警告
         self._busy = False
+        self._pending = {              # 待持久化的本次登录凭据（成功后才落盘）
+            "phone": "", "password": "", "card_key": "",
+        }
 
         self.setWindowTitle("智播豆 · 登录 v%s" % APP_VERSION)
         self.setFixedSize(980, 640)
@@ -272,7 +275,7 @@ class LoginWindow(QDialog):
         lay.addWidget(title)
         lay.addSpacing(8)
 
-        subtitle = QLabel("登录 AI 直播工作台，继续你的自动化直播流程")
+        subtitle = QLabel("登录矩阵转发工作台，管理推流与多端分发")
         subtitle.setFont(theme.font(theme.FS_CAPTION))
         subtitle.setStyleSheet(theme.label_style(theme.FS_CAPTION, theme.TEXT_MUTED))
         lay.addWidget(subtitle)
@@ -306,6 +309,7 @@ class LoginWindow(QDialog):
         lay.addWidget(foot)
         lay.addSpacing(12)
 
+        self._prefill_credentials()
         self._on_tab_changed("login")
 
     def _foot_text(self):
@@ -356,12 +360,6 @@ class LoginWindow(QDialog):
         self.btn_login.clicked.connect(self._do_login)
         lay.addWidget(self.btn_login)
 
-        # 环境变量预填，方便联调时免手输
-        if os.getenv("PDK_PHONE"):
-            self.login_phone.setText(os.getenv("PDK_PHONE", ""))
-        if os.getenv("PDK_PASSWORD"):
-            self.login_password.setText(os.getenv("PDK_PASSWORD", ""))
-
         # 回车直接提交
         self.login_phone.edit.returnPressed.connect(self._do_login)
         self.login_password.edit.returnPressed.connect(self._do_login)
@@ -392,13 +390,6 @@ class LoginWindow(QDialog):
         self._style_primary(self.btn_activate)
         self.btn_activate.clicked.connect(self._do_activate)
         lay.addWidget(self.btn_activate)
-
-        if os.getenv("PDK_PHONE"):
-            self.act_phone.setText(os.getenv("PDK_PHONE", ""))
-        if os.getenv("PDK_PASSWORD"):
-            self.act_password.setText(os.getenv("PDK_PASSWORD", ""))
-        if os.getenv("PDK_CARD_KEY"):
-            self.act_card.setText(os.getenv("PDK_CARD_KEY", ""))
 
         for field in (self.act_phone, self.act_password, self.act_card):
             field.edit.returnPressed.connect(self._do_activate)
@@ -454,6 +445,10 @@ class LoginWindow(QDialog):
     def _start_auth(self, phone, password, card_key=""):
         if self._busy:
             return
+        # 记下本次认证参数，登录成功后再落盘；失败不保存
+        self._pending = {
+            "phone": phone, "password": password, "card_key": card_key,
+        }
         if pdk_auth is None:
             QMessageBox.critical(
                 self, "组件缺失",
@@ -486,10 +481,49 @@ class LoginWindow(QDialog):
         self._busy = False
         self._set_buttons_enabled(True)
         self.auth_result = result
+        self._persist_credentials()
         self.hint.setText("PDK 会话已验证")
         QMessageBox.information(
             self, "提示", "登录成功\n%s\n正在进入主控台…" % result.display_detail())
         self.accept()
+
+    def _persist_credentials(self):
+        """登录成功后把本次凭据加密落盘，供下次自动回填（失败静默忽略）。"""
+        creds = self._pending or {}
+        phone = creds.get("phone", "")
+        password = creds.get("password", "")
+        card_key = creds.get("card_key", "")
+        if phone and password:
+            save_credentials(phone, password, card_key)
+
+    def _prefill_credentials(self):
+        """构造时回填已保存凭据（环境变量联调值优先于本地凭据）。
+
+        仅在确有手机号时提示「已自动填入」，避免每次开屏都误导用户。
+        """
+        phone = os.getenv("PDK_PHONE") or ""
+        password = os.getenv("PDK_PASSWORD") or ""
+        card_key = os.getenv("PDK_CARD_KEY") or ""
+        if not phone:
+            try:
+                creds = load_credentials() or {}
+            except Exception:
+                creds = {}
+            phone = creds.get("phone", "")
+            password = password or creds.get("password", "")
+            card_key = card_key or creds.get("card_key", "")
+
+        if not phone:
+            return
+        self.login_phone.setText(phone)
+        if password:
+            self.login_password.setText(password)
+        self.act_phone.setText(phone)
+        if password:
+            self.act_password.setText(password)
+        if card_key:
+            self.act_card.setText(card_key)
+        self.hint.setText("已自动填入上次登录账号，可直接登录")
 
     def _on_auth_fail(self, exc, phone, password):
         self._busy = False

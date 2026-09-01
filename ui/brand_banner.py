@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """登录窗口左侧品牌 banner（渐变背景 + 装饰 + logo + 文字层级）。
 
-视觉与 zhibodou-ai 项目 `src/gui/login.py::_on_banner_resize` 逐点对应：
-同样的靛青→青绿水平渐变、同样的四角装饰圆点/圆环、同样的极淡网格，以及
-「logo 字母 > 项目名 > 副标题 > 版本/版权」四级文字层次。
+采用靛青到青蓝的水平渐变、四角装饰圆点/圆环和极淡网格，以
+「logo 字母 > 项目名 > 产品定位 > 版本/版权」建立四级文字层次。
 
 全部绘制按控件宽高比例计算，因此换尺寸不会错位。
 """
@@ -101,7 +100,7 @@ class BrandBanner(QWidget):
         # 顶部产品线标签
         p.setPen(QColor(theme.BANNER_SUB))
         p.setFont(theme.font_en(9, bold=True))
-        p.drawText(QRectF(0, 42 - 10, w, 20), Qt.AlignCenter, "AI LIVE OPERATIONS")
+        p.drawText(QRectF(0, 42 - 10, w, 20), Qt.AlignCenter, "MATRIX LIVE ROUTING")
 
         # L1 项目名（最大号 + bold + 纯白）
         p.setPen(QColor(theme.BANNER_TEXT))
@@ -112,7 +111,7 @@ class BrandBanner(QWidget):
         p.setPen(QColor(theme.BANNER_SUB))
         p.setFont(theme.font(theme.FS_CAPTION))
         p.drawText(QRectF(0, cy + rr + 76 - 14, w, 28), Qt.AlignCenter,
-                   "AI 智能直播管控系统")
+                   "矩阵转发 · 直播推流系统")
 
         # L3 版本 / 版权（最弱，退到更淡的蓝）
         p.setPen(QColor(theme.BANNER_FAINT))

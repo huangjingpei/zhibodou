@@ -251,7 +251,9 @@ def main():
     ]
     if not args.no_clean:
         opts.append("--clean")
-    for m in HIDDEN_IMPORTS + PROJECT_PACKAGES:
+    # 必须传入每一个项目子模块，而不只是顶层包名。core.net、旧授权兼容层等
+    # 当前可能没有静态 import，但仍属于冻结态自检和后续运行期动态加载范围。
+    for m in HIDDEN_IMPORTS + project_modules():
         opts += ["--hidden-import", m]
     for m in COLLECT_ALL:
         opts += ["--collect-all", m]
