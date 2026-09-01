@@ -3,6 +3,15 @@
 """
 直播豆（智播豆）一键打包脚本 —— 生成 Windows exe。
 
+入口: main.py（项目已按功能拆分为包，main.py 是唯一入口）
+    core/        运行时兜底、全局配置、崩溃诊断、局域网发现
+    capture/     音视频采集（设备枚举、麦克风、摄像头分辨率探测）
+    processing/  流处理（美颜/裁竖屏、抖音直播源解析）
+    streaming/   推流（PyAV 首选 / ffmpeg 回退 / 后端自动选择）
+    sessions/    业务编排（主播会话、观众会话）
+    licensing/   授权激活
+    ui/          界面（主窗口、控件、应用类）
+
 用法（在装齐依赖的环境中执行）：
     python build_exe.py                 # one-folder + 控制台，日志可见（推荐用于调试）
     python build_exe.py --windowed      # 无控制台窗口的发布版（日志写入 exe 同目录 zhibodou.log）
@@ -23,8 +32,12 @@ import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENTRY = os.path.join(HERE, "zhibodou.py")
+ENTRY = os.path.join(HERE, "main.py")
 PROJECT_DIST = os.path.join(HERE, "dist")
+
+# 项目包（PyInstaller 静态分析一般能追踪到，但显式声明可确保万无一失）
+PROJECT_PACKAGES = ["core", "capture", "processing", "streaming",
+                    "sessions", "licensing", "ui"]
 
 # 运行期必需、但 PyInstaller 静态分析可能漏掉的模块
 HIDDEN_IMPORTS = [
@@ -66,6 +79,17 @@ EXCLUDES = [
 def die(msg):
     print(f"[build][错误] {msg}")
     sys.exit(1)
+
+
+def check_layout():
+    """校验入口与包目录齐全，避免打出一个跑不起来的空壳。"""
+    if not os.path.isfile(ENTRY):
+        die(f"入口文件不存在: {ENTRY}")
+    missing = [p for p in PROJECT_PACKAGES
+               if not os.path.isfile(os.path.join(HERE, p, "__init__.py"))]
+    if missing:
+        die("缺少包目录: " + ", ".join(missing) +
+            "\n        项目已按功能拆分，这些目录必须与 main.py 同级")
 
 
 def check_deps():
@@ -137,8 +161,7 @@ def main():
     ap.add_argument("--icon", default="", help="exe 图标（.ico 路径）")
     args = ap.parse_args()
 
-    if not os.path.isfile(ENTRY):
-        die(f"入口文件不存在: {ENTRY}")
+    check_layout()
     check_deps()
 
     # 项目根若残留旧 spec，提醒一下：本脚本不使用它（spec 统一生成到临时目录）
@@ -179,7 +202,7 @@ def main():
     ]
     if not args.no_clean:
         opts.append("--clean")
-    for m in HIDDEN_IMPORTS:
+    for m in HIDDEN_IMPORTS + PROJECT_PACKAGES:
         opts += ["--hidden-import", m]
     for m in COLLECT_ALL:
         opts += ["--collect-all", m]
