@@ -34,7 +34,7 @@ HOST_MODE = "rtmp"
 RTMP_SERVER_IP = "43.248.187.207"
 RTMP_PORT = 1935
 RTMP_APP = "live"
-RTMP_STREAM_KEY = "zhibodou"
+RTMP_STREAM_KEY = "zbd"
 RTMP_PUBLISH_USER = ""   # MediaMTX 发布鉴权账号（未开启则留空）
 RTMP_PUBLISH_PASS = ""   # MediaMTX 发布鉴权密码（未开启则留空）
 
@@ -128,7 +128,7 @@ SELFCHECK_ARG = "--selfcheck"
 # 仅记录模块名，不做导入 —— 供 --selfcheck 自检遍历，以及打包脚本对照目录结构。
 # 新增模块时记得同步这里，否则打包能过（静态分析追踪得到）但自检覆盖不到。
 PROJECT_PACKAGES = ("core", "capture", "processing", "streaming",
-                    "sessions", "licensing", "pdk", "ui", "ui.panels")
+                    "sessions", "licensing", "pdk", "client_update", "ui", "ui.panels")
 PROJECT_MODULES = (
     "core.config", "core.runtime", "core.diagnostics", "core.net",
     "core.credentials",
@@ -139,6 +139,9 @@ PROJECT_MODULES = (
     "sessions.host", "sessions.client",
     "licensing.auth",
     "pdk.pdk_client", "pdk.auth_service",
+    "client_update.errors", "client_update.config", "client_update.security",
+    "client_update.api", "client_update.health", "client_update.manager",
+    "client_update.qt_flow", "client_update.updater",
     "ui.widgets", "ui.app", "ui.theme", "ui.icons", "ui.brand_banner",
     "ui.login_window", "ui.main_window",
     "ui.panels.base", "ui.panels.home", "ui.panels.auth",

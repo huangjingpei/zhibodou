@@ -206,10 +206,9 @@ class PdkAuthServiceTests(unittest.TestCase):
     def test_defaults_match_client_demo(self):
         settings = auth_service.PdkSettings.from_env()
         self.assertEqual("http://127.0.0.1:8080", settings.base_url)
-        self.assertEqual(2, settings.app_id)
+        self.assertEqual(3, settings.app_id)
         self.assertFalse(settings.http_debug)
 
 
 if __name__ == "__main__":
     unittest.main()
-

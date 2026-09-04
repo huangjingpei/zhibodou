@@ -17,7 +17,7 @@ import sys
 # 必须在任何 print / 任何重量级 import 之前导入：负责 windowed 模式 stdio
 # 兜底、PyAV 可用性探测、单例互斥锁。
 from core.runtime import IS_FROZEN  # noqa: F401  （导入即完成兜底）
-from core.config import PROBE_ARG, SELFCHECK_ARG
+from core.config import APP_VERSION, PROBE_ARG, SELFCHECK_ARG
 
 
 def _run_probe_worker():
@@ -74,6 +74,26 @@ def main():
 
     install_excepthook()
     app = SafeApplication(sys.argv)
+    # updater 拉起新版后，只有核心模块和 QApplication 均成功初始化才写健康标记。
+    # 独立 updater 收到该标记后才会删除旧版本，否则会自动回滚。
+    from client_update.health import mark_update_healthy
+    mark_update_healthy(APP_VERSION)
+
+    # 更新检查在登录前进行，不依赖用户 Token；强制版本无法绕过登录窗继续使用。
+    from client_update.config import UpdateConfig
+    from client_update.qt_flow import run_startup_update
+    from pdk.pdk_client import load_or_create_device_id
+    try:
+        update_app_id = UpdateConfig.load().app_id
+    except Exception:
+        # 具体配置错误由 Qt 编排层统一展示，这里只为取得稳定设备 ID 做兜底。
+        update_app_id = int(os.getenv("PDK_APP_ID", "3"))
+    update_result = run_startup_update(
+        load_or_create_device_id(update_app_id), expected_version=APP_VERSION,
+    )
+    if not update_result.continue_startup:
+        return 0
+
     # 登录 → 主窗口 → 退出登录 循环：点「退出登录」会回到登录窗，关闭登录窗则退出。
     while True:
         login = LoginWindow()

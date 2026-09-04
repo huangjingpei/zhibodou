@@ -39,7 +39,11 @@ PROJECT_DIST = os.path.join(HERE, "dist")
 
 # 项目包（PyInstaller 静态分析一般能追踪到，但显式声明可确保万无一失）
 PROJECT_PACKAGES = ["core", "capture", "processing", "streaming",
-                    "sessions", "licensing", "pdk", "ui"]
+                    "sessions", "licensing", "pdk", "client_update", "ui"]
+
+UPDATE_CONFIG = os.path.join(HERE, "config", "client-update.json")
+UPDATER_ENTRY = os.path.join(HERE, "client_update", "updater.py")
+UPDATER_BINARY_NAME = "zhibodou_updater.exe"
 
 # 运行期必需、但 PyInstaller 静态分析可能漏掉的模块
 HIDDEN_IMPORTS = [
@@ -138,6 +142,26 @@ def check_layout():
     if missing:
         die("缺少包目录: " + ", ".join(missing) +
             "\n        项目已按功能拆分，这些目录必须与 main.py 同级")
+    if not os.path.isfile(UPDATE_CONFIG) or not os.path.isfile(UPDATER_ENTRY):
+        die("缺少客户端升级配置或独立 updater 入口")
+    try:
+        import json
+        update_config = json.loads(open(UPDATE_CONFIG, "r", encoding="utf-8").read())
+        config_source = open(os.path.join(HERE, "core", "config.py"), "r", encoding="utf-8").read()
+        tree = ast.parse(config_source)
+        app_version = next(
+            ast.literal_eval(node.value) for node in tree.body
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "APP_VERSION" for target in node.targets)
+        )
+        if update_config.get("version") != app_version:
+            die(f"版本不一致：core.config={app_version}，client-update.json={update_config.get('version')}")
+        if update_config.get("entryPoint") != "zhibodou.exe":
+            die("client-update.json 的 entryPoint 必须是 zhibodou.exe")
+        if update_config.get("updaterExecutable") != UPDATER_BINARY_NAME:
+            die(f"client-update.json 的 updaterExecutable 必须是 {UPDATER_BINARY_NAME}")
+    except (OSError, ValueError, StopIteration) as exc:
+        die(f"升级配置校验失败：{exc}")
 
 
 def check_deps():
@@ -240,6 +264,38 @@ def main():
                   "  请先关闭正在运行的程序，或手动删除该目录后重试。")
             return 1
 
+    # updater 必须是独立进程，才能在主程序退出后替换整个 onedir 安装目录。
+    # 先构建成单文件 EXE，再作为资源随主程序分发；运行安装时会复制到用户缓存，
+    # 因而 updater 自身也不会锁住待替换目录。
+    from PyInstaller.__main__ import run as pyi_run
+    updater_dist = tempfile.mkdtemp(prefix="zhibodou_updater_dist_")
+    updater_work = tempfile.mkdtemp(prefix="zhibodou_updater_build_")
+    updater_spec = tempfile.mkdtemp(prefix="zhibodou_updater_spec_")
+    updater_opts = [
+        UPDATER_ENTRY,
+        "--name", "zhibodou_updater",
+        "--noconfirm", "--noupx", "--onefile", "--windowed",
+        "--paths", HERE,
+        "--distpath", updater_dist,
+        "--workpath", updater_work,
+        "--specpath", updater_spec,
+        "--hidden-import", "requests",
+        "--hidden-import", "cryptography",
+    ]
+    if not args.no_clean:
+        updater_opts.append("--clean")
+    for module in ("PyQt5", "cv2", "av", "numpy", "sounddevice", "streamlink", "pyvirtualcam"):
+        updater_opts += ["--exclude-module", module]
+    print("[build] 正在构建独立升级器 zhibodou_updater.exe")
+    try:
+        pyi_run(updater_opts)
+    except SystemExit as e:
+        if e.code not in (0, None):
+            die(f"独立升级器 PyInstaller 退出码 {e.code}")
+    updater_binary = os.path.join(updater_dist, UPDATER_BINARY_NAME)
+    if not os.path.isfile(updater_binary):
+        die(f"独立升级器构建结束但未找到产物：{updater_binary}")
+
     opts = [
         ENTRY,
         "--name", "zhibodou",
@@ -260,6 +316,13 @@ def main():
     for m in EXCLUDES:
         opts += ["--exclude-module", m]
 
+    sep = ";" if sys.platform.startswith("win") else ":"
+    # onefile 运行时只能从 PyInstaller 临时展开目录取资源；onedir 则在构建完成后
+    # 显式复制到发布根目录，确保服务端打包器能把 client-update.json 识别为 buildConfig。
+    if args.onefile:
+        opts += ["--add-data", f"{UPDATE_CONFIG}{sep}."]
+        opts += ["--add-binary", f"{updater_binary}{sep}."]
+
     opts.append("--onefile" if args.onefile else "--onedir")
     opts.append("--windowed" if args.windowed else "--console")
 
@@ -273,7 +336,6 @@ def main():
     # ffmpeg.exe 作为回退推流方案的二进制，随产物分发
     ffmpeg, src = resolve_ffmpeg()
     if ffmpeg:
-        sep = ";" if sys.platform.startswith("win") else ":"
         opts += ["--add-binary", f"{ffmpeg}{sep}."]
         print(f"[build] 已包含 ffmpeg（来源：{src}）-> {ffmpeg}")
     else:
@@ -285,13 +347,20 @@ def main():
     print(f"[build] 输出目录: {distpath}")
 
     t0 = time.time()
-    from PyInstaller.__main__ import run as pyi_run
     try:
         pyi_run(opts)
     except SystemExit as e:
         if e.code not in (0, None):
             die(f"PyInstaller 退出码 {e.code}，构建失败")
     cost = time.time() - t0
+
+    if not args.onefile:
+        release_root = os.path.join(distpath, "zhibodou")
+        if not os.path.isdir(release_root):
+            die(f"onedir 构建结束但发布目录不存在：{release_root}")
+        shutil.copy2(UPDATE_CONFIG, os.path.join(release_root, "client-update.json"))
+        shutil.copy2(updater_binary, os.path.join(release_root, UPDATER_BINARY_NAME))
+        print(f"[build] 已放置升级运行时：client-update.json / {UPDATER_BINARY_NAME}")
 
     # 沙箱模式：把临时目录产物拷回项目 dist/
     if sandboxed and os.path.isdir(distpath):

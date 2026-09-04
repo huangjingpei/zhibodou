@@ -1,0 +1,22 @@
+{
+  "enabled": true,
+  "appId": 3,
+  "bizCode": "ZHIBO_LIVE",
+  "displayName": "矩阵转发与推流客户端",
+  "version": "1.7.0",
+  "channel": "STABLE",
+  "updaterVersion": "1.0.0",
+  "protocolVersion": 1,
+  "platform": "WINDOWS",
+  "arch": "X64",
+  "entryPoint": "zhibodou.exe",
+  "updaterExecutable": "zhibodou_updater.exe",
+  "serverBaseUrl": "http://127.0.0.1:8080",
+  "healthTimeoutSeconds": 45,
+  "artifactPublicKeys": {
+    "client-release-2026-01": "MCowBQYDK2VwAyEAxEKE2sxYw8qd6gBCbweN4kUQS0ghHguFB7JxHhpW448="
+  },
+  "policyPublicKeys": {
+    "client-policy-2026-01": "MCowBQYDK2VwAyEA6mw6wTWBaKcQkv4BkDbD/dBaYJbWjOMJRAT7pn3aIEo="
+  }
+}
