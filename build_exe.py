@@ -45,6 +45,11 @@ UPDATE_CONFIG = os.path.join(HERE, "config", "client-update.json")
 UPDATER_ENTRY = os.path.join(HERE, "client_update", "updater.py")
 UPDATER_BINARY_NAME = "zhibodou_updater.exe"
 
+# Release 构建的默认生产 PDK 后端。--release 时经 runtime-hook 注入
+# PDK_BASE_URL（setdefault，环境变量仍可覆盖）；debug/测试构建不注入，
+# 默认仍为 http://127.0.0.1:8080（见 pdk/auth_service.py::PdkSettings.from_env）。
+RELEASE_BASE_URL = "https://pdk.graddu.com"
+
 # 运行期必需、但 PyInstaller 静态分析可能漏掉的模块
 HIDDEN_IMPORTS = [
     "cv2",
@@ -232,6 +237,9 @@ def main():
     ap.add_argument("--no-clean", action="store_true",
                     help="复用上次构建缓存（默认每次全新构建）")
     ap.add_argument("--icon", default="", help="exe 图标（.ico 路径）")
+    ap.add_argument("--release", action="store_true",
+                    help=f"交付版：注入生产后端 {RELEASE_BASE_URL}"
+                         "（debug/测试版构建不加此参数，默认 127.0.0.1:8080）")
     args = ap.parse_args()
 
     check_layout()
@@ -268,6 +276,23 @@ def main():
     # 先构建成单文件 EXE，再作为资源随主程序分发；运行安装时会复制到用户缓存，
     # 因而 updater 自身也不会锁住待替换目录。
     from PyInstaller.__main__ import run as pyi_run
+
+    # --release：生成 runtime-hook，给主程序与独立升级器注入生产后端地址。
+    # hook 在任何业务代码之前执行 setdefault，环境变量 PDK_BASE_URL 仍可覆盖
+    # （本机联调、临时切测试服都不用重新打包）。
+    rth_path = ""
+    if args.release:
+        rth_dir = tempfile.mkdtemp(prefix="zhibodou_rth_")
+        rth_path = os.path.join(rth_dir, "rth_pdk_release.py")
+        with open(rth_path, "w", encoding="utf-8") as fh:
+            fh.write(
+                "# 由 build_exe.py --release 自动生成：交付版默认生产 PDK 后端\n"
+                "import os\n"
+                f"os.environ.setdefault('PDK_BASE_URL', '{RELEASE_BASE_URL}')\n"
+            )
+        print(f"[build] release 模式：默认后端 {RELEASE_BASE_URL}"
+              f"（环境变量 PDK_BASE_URL 可覆盖）")
+
     updater_dist = tempfile.mkdtemp(prefix="zhibodou_updater_dist_")
     updater_work = tempfile.mkdtemp(prefix="zhibodou_updater_build_")
     updater_spec = tempfile.mkdtemp(prefix="zhibodou_updater_spec_")
@@ -284,6 +309,8 @@ def main():
     ]
     if not args.no_clean:
         updater_opts.append("--clean")
+    if args.release:
+        updater_opts += ["--runtime-hook", rth_path]
     for module in ("PyQt5", "cv2", "av", "numpy", "sounddevice", "streamlink", "pyvirtualcam"):
         updater_opts += ["--exclude-module", module]
     print("[build] 正在构建独立升级器 zhibodou_updater.exe")
@@ -307,6 +334,8 @@ def main():
     ]
     if not args.no_clean:
         opts.append("--clean")
+    if args.release:
+        opts += ["--runtime-hook", rth_path]
     # 必须传入每一个项目子模块，而不只是顶层包名。core.net、旧授权兼容层等
     # 当前可能没有静态 import，但仍属于冻结态自检和后续运行期动态加载范围。
     for m in HIDDEN_IMPORTS + project_modules():
@@ -343,7 +372,8 @@ def main():
               "若目标机器也没有 ffmpeg 且 av 不可用，则无法推流")
 
     print(f"[build] 模式: {'onefile' if args.onefile else 'onedir'}"
-          f" / {'windowed' if args.windowed else 'console'}")
+          f" / {'windowed' if args.windowed else 'console'}"
+          f" / {'release' if args.release else 'debug/test'}")
     print(f"[build] 输出目录: {distpath}")
 
     t0 = time.time()
