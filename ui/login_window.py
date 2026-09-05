@@ -20,8 +20,9 @@ from PyQt5.QtWidgets import (
 from ui import theme
 from ui.brand_banner import BrandBanner
 from ui.icons import ICON_SIZE, icon_pixmap
-from core.config import APP_VERSION
+from core.config import APP_VERSION, TRIAL_EXPIRE_DATE
 from core.credentials import save_credentials, load_credentials
+from core.trial import trial_active
 
 
 # PDK 客户端依赖 requests + cryptography。缺任一依赖时**不能**让整个登录界面
@@ -310,10 +311,17 @@ class LoginWindow(QDialog):
         lay.addSpacing(12)
 
         self._prefill_credentials()
+        # Trial 版提示：本地校验、无需联网（覆盖预填提示，优先级更高）
+        if trial_active():
+            self.hint.setText(
+                "试用版模式：本地校验登录，无需连接服务器（有效期至 %04d-%02d-%02d）"
+                % TRIAL_EXPIRE_DATE)
         self._on_tab_changed("login")
 
     def _foot_text(self):
         base = "当前版本：%s" % APP_VERSION
+        if trial_active():
+            return base + "　|　试用版 · 本地模式"
         if pdk_auth is None:
             return base + "　|　PDK 组件未就绪"
         try:
@@ -425,6 +433,9 @@ class LoginWindow(QDialog):
             return
         # 普通登录绝不隐式携带卡密。DEVICE_LICENSE 新设备需要激活时，服务端
         # 返回 40380，界面会切换到激活页由用户明确提交卡密。
+        # Trial 版：本地直接放行，不连接服务器。
+        if trial_active():
+            return self._trial_login(phone)
         self._start_auth(phone, password)
 
     def _do_activate(self):
@@ -440,7 +451,27 @@ class LoginWindow(QDialog):
         if not card:
             self._warn("请输入卡密")
             return
+        # Trial 版：激活同样本地放行（无需真实卡密）
+        if trial_active():
+            return self._trial_login(phone)
         self._start_auth(phone, password, card)
+
+    def _trial_login(self, phone):
+        """Trial 版登录：本地建立试用会话，不连接任何服务器、不落盘凭据。"""
+        if pdk_auth is None:
+            QMessageBox.critical(
+                self, "组件缺失",
+                "PDK 授权组件不可用，无法建立本地试用会话。\n\n"
+                "请先安装依赖：pip install requests cryptography")
+            return
+        try:
+            result = pdk_auth.login_trial(phone)
+        except Exception as exc:
+            QMessageBox.critical(self, "提示", "本地试用登录失败：%s" % exc)
+            return
+        # 试用会话不把测试账号写进本地凭据记录
+        self._pending = {"phone": "", "password": "", "card_key": ""}
+        self._on_auth_ok(result)
 
     def _start_auth(self, phone, password, card_key=""):
         if self._busy:

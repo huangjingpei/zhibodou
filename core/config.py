@@ -11,6 +11,17 @@ APP_VERSION = "1.7.0"
 
 
 # ============================================================
+# ★ 试用版（Trial）有效期（纯本地判断，不连接任何服务器）★
+# ============================================================
+# TRIAL_ENABLED 是总开关：正式版发布时改为 False（或删掉 main.py 中的调用点）
+# 即可完全恢复原逻辑，其余代码不受影响。
+# TRIAL_EXPIRE_DATE 为截止日：当天（含）全天可用，次日 0 点起禁止登录使用。
+# 注：9 月只有 30 天，不存在 09-31；「用到 9 月底」即 (2026, 9, 30)。
+TRIAL_ENABLED = True
+TRIAL_EXPIRE_DATE = (2026, 9, 30)
+
+
+# ============================================================
 # ★ 核心配置（天翼云直推模式）★
 # ============================================================
 ROLE = "host"
@@ -131,7 +142,7 @@ PROJECT_PACKAGES = ("core", "capture", "processing", "streaming",
                     "sessions", "licensing", "pdk", "client_update", "ui", "ui.panels")
 PROJECT_MODULES = (
     "core.config", "core.runtime", "core.diagnostics", "core.net",
-    "core.credentials",
+    "core.credentials", "core.trial",
     "capture.devices", "capture.audio", "capture.resolution",
     "processing.image", "processing.live",
     "streaming.ffmpeg_tool", "streaming.pyav_pusher",

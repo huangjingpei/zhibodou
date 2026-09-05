@@ -65,7 +65,7 @@ def main():
         return _run_selfcheck()
 
     import traceback
-    from PyQt5.QtWidgets import QDialog
+    from PyQt5.QtWidgets import QDialog, QMessageBox
 
     from core.diagnostics import install_excepthook, report_fatal
     from ui.app import SafeApplication
@@ -74,28 +74,44 @@ def main():
 
     install_excepthook()
     app = SafeApplication(sys.argv)
+
+    # Trial 试用期检查（纯本地时间判断，不连接服务器）：过期则禁止登录使用。
+    # 正式版发布时把 core.config.TRIAL_ENABLED 改为 False 即可完全关闭本检查。
+    from core.trial import trial_active, trial_blocked
+    blocked_reason = trial_blocked()
+    if blocked_reason:
+        QMessageBox.critical(None, "试用版已到期", blocked_reason)
+        return 0
+
     # updater 拉起新版后，只有核心模块和 QApplication 均成功初始化才写健康标记。
     # 独立 updater 收到该标记后才会删除旧版本，否则会自动回滚。
     from client_update.health import mark_update_healthy
     mark_update_healthy(APP_VERSION)
 
     # 更新检查在登录前进行，不依赖用户 Token；强制版本无法绕过登录窗继续使用。
-    from client_update.config import UpdateConfig
-    from client_update.qt_flow import run_startup_update
-    from pdk.pdk_client import load_or_create_device_id
-    try:
-        update_app_id = UpdateConfig.load().app_id
-    except Exception:
-        # 具体配置错误由 Qt 编排层统一展示，这里只为取得稳定设备 ID 做兜底。
-        update_app_id = int(os.getenv("PDK_APP_ID", "3"))
-    update_result = run_startup_update(
-        load_or_create_device_id(update_app_id), expected_version=APP_VERSION,
-    )
-    if not update_result.continue_startup:
-        return 0
+    # Trial 版不连接任何服务器：跳过启动更新检查。
+    if not trial_active():
+        from client_update.config import UpdateConfig
+        from client_update.qt_flow import run_startup_update
+        from pdk.pdk_client import load_or_create_device_id
+        try:
+            update_app_id = UpdateConfig.load().app_id
+        except Exception:
+            # 具体配置错误由 Qt 编排层统一展示，这里只为取得稳定设备 ID 做兜底。
+            update_app_id = int(os.getenv("PDK_APP_ID", "3"))
+        update_result = run_startup_update(
+            load_or_create_device_id(update_app_id), expected_version=APP_VERSION,
+        )
+        if not update_result.continue_startup:
+            return 0
 
     # 登录 → 主窗口 → 退出登录 循环：点「退出登录」会回到登录窗，关闭登录窗则退出。
     while True:
+        # 覆盖「软件跨过截止时刻仍在运行、退出登录回到登录窗」的场景
+        blocked_reason = trial_blocked()
+        if blocked_reason:
+            QMessageBox.critical(None, "试用版已到期", blocked_reason)
+            return 0
         login = LoginWindow()
         try:
             if login.exec_() != QDialog.Accepted:

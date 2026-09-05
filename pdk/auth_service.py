@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from pdk.pdk_client import PdkClient, PdkClientError
-from core.config import APP_VERSION
+from core.config import APP_VERSION, TRIAL_EXPIRE_DATE
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -107,6 +107,36 @@ class AuthResult:
 _lock = threading.RLock()
 _client: Optional[PdkClient] = None
 _auth_result: Optional[AuthResult] = None
+_trial_mode = False   # Trial 版本地会话标记：True 时本模块不进行任何网络交互
+
+
+def login_trial(phone: str = "") -> AuthResult:
+    """Trial 版本地登录：不连接任何服务器，直接建立本地试用会话。
+
+    由登录窗在 core.trial.trial_active() 为真时调用；正式版把
+    core.config.TRIAL_ENABLED 置 False 后 UI 不会再走到本函数。
+    会话快照标记为 TRIAL，到期时间取试用截止日。
+    """
+    global _client, _auth_result, _trial_mode
+    expire = "%04d-%02d-%02d" % TRIAL_EXPIRE_DATE
+    result = AuthResult(
+        phone=(phone or "").strip() or "试用用户",
+        business={"bizCode": "TRIAL", "authorizationMode": "TRIAL"},
+        session={"sessionValid": True, "operationAllowedHint": True,
+                 "status": "TRIAL", "expireAt": expire, "bizCode": "TRIAL"},
+        profile={"status": "TRIAL", "expireTime": expire, "remainingCalls": None},
+        device_license={},
+    )
+    with _lock:
+        _client = None
+        _auth_result = result
+        _trial_mode = True
+    return result
+
+
+def is_trial_session() -> bool:
+    with _lock:
+        return _trial_mode
 
 
 def _validate_business(info: dict[str, Any], settings: PdkSettings) -> None:
@@ -212,6 +242,8 @@ def current_auth() -> Optional[AuthResult]:
 
 def is_authenticated() -> bool:
     with _lock:
+        if _trial_mode:
+            return _auth_result is not None
         return bool(_client is not None and _client.is_logged_in and _auth_result is not None)
 
 
@@ -223,6 +255,12 @@ def verify_current_session() -> AuthResult:
     """
     global _auth_result
     with _lock:
+        # Trial 版本地会话：直接返回快照，不向服务端校验（_client 为 None，
+        # 若不短路会在下面立刻抛 40100）。
+        if _trial_mode:
+            if _auth_result is None:
+                raise PdkClientError(40100, "当前没有有效登录会话，请重新登录")
+            return _auth_result
         client = _client
         previous = _auth_result
         if client is None or previous is None or not client.is_logged_in:
@@ -268,12 +306,16 @@ def verify_current_session() -> AuthResult:
 
 
 def logout() -> None:
-    """服务端注销并无条件清理本地 Token/HTTP 资源。"""
-    global _client, _auth_result
+    """服务端注销并无条件清理本地 Token/HTTP 资源。
+
+    Trial 版本地会话没有 client，直接清理标记即返回，不产生网络请求。
+    """
+    global _client, _auth_result, _trial_mode
     with _lock:
         client = _client
         _client = None
         _auth_result = None
+        _trial_mode = False
     if client is None:
         return
     try:
