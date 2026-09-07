@@ -17,9 +17,10 @@ ROLE = "host"
 HOST_MODE = "rtmp"
 
 # ============================================================
-# ★ RTMP 推流配置（主播端）★
-# 推流服务器地址在代码内固定：本机 127.0.0.1
-# 若需推到公网，请修改 RTMP_SERVER_IP / RTMP_PORT / RTMP_STREAM_KEY
+# ★ RTMP 推流配置（主播端·本地兜底）★
+# 正式 PDK 会话下推流地址由后端短效签发（pdk/live_service.py 申请
+# publish ticket，见 E:\pdk\docs\ZHIBO_LIVE_CLIENT_INTEGRATION_GUIDE.md），
+# 本组配置仅在未登录 PDK 的本地/开发场景（本地 MediaMTX）作为兜底地址。
 #
 # 关于 MediaMTX 的 stream key：
 #   MediaMTX 没有 nginx-rtmp 那种「app/stream」两层概念，它把「端口后整段路径」
@@ -138,7 +139,7 @@ PROJECT_MODULES = (
     "streaming.ffmpeg_pusher", "streaming.factory",
     "sessions.host", "sessions.client",
     "licensing.auth",
-    "pdk.pdk_client", "pdk.auth_service",
+    "pdk.pdk_client", "pdk.auth_service", "pdk.live_service",
     "client_update.errors", "client_update.config", "client_update.security",
     "client_update.api", "client_update.health", "client_update.manager",
     "client_update.qt_flow", "client_update.updater",

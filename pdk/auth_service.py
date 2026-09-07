@@ -67,6 +67,7 @@ class AuthResult:
     session: dict[str, Any] = field(default_factory=dict)
     profile: dict[str, Any] = field(default_factory=dict)
     device_license: dict[str, Any] = field(default_factory=dict)
+    live_media: dict[str, Any] = field(default_factory=dict)
 
     @property
     def authorization_mode(self) -> str:
@@ -97,6 +98,8 @@ class AuthResult:
     def display_detail(self) -> str:
         biz = str(self.business.get("bizCode") or self.session.get("bizCode") or "PDK")
         parts = [self.masked_phone, biz, self.status]
+        if self.live_media.get("mediaServerAddress"):
+            parts.append("媒体服务已就绪")
         if self.expire_at:
             parts.append(f"到期 {self.expire_at}")
         if self.remaining_calls != "不限":
@@ -117,6 +120,14 @@ def _validate_business(info: dict[str, Any], settings: PdkSettings) -> None:
     if info.get("effectiveStatus") != "AVAILABLE":
         code = 50350 if info.get("configuredStatus") == "ACTIVE" else 40321
         raise PdkClientError(code, str(info.get("unavailableReason") or "当前业务不可用"), data=info)
+    if settings.app_id == 3 and actual == "ZHIBO_LIVE":
+        media = info.get("liveMedia") or {}
+        if not media.get("enabled") or media.get("status") != "AVAILABLE":
+            raise PdkClientError(
+                50372,
+                str(media.get("status") or info.get("unavailableReason") or "当前没有可用直播媒体节点"),
+                data=info,
+            )
 
 
 def authenticate(phone: str, password: str, card_key: str = "", *,
@@ -154,6 +165,7 @@ def authenticate(phone: str, password: str, card_key: str = "", *,
         public_config = candidate.fetch_public_config()
         business = candidate.business_info()
         _validate_business(business, settings)
+        live_media = business.get("liveMedia") or {}
         login_data = candidate.login(password, phone=phone, card_key=card_key)
         logged_in = True
         session = candidate.verify_session()
@@ -182,6 +194,7 @@ def authenticate(phone: str, password: str, card_key: str = "", *,
             session=session,
             profile=profile,
             device_license=device_license,
+            live_media=live_media,
         )
     except Exception:
         if logged_in:
@@ -208,6 +221,17 @@ def authenticate(phone: str, password: str, card_key: str = "", *,
 def current_auth() -> Optional[AuthResult]:
     with _lock:
         return _auth_result
+
+
+def current_client() -> Optional[PdkClient]:
+    """返回当前已登录的 PdkClient，供 live_service 等编排层做受保护请求。
+
+    未登录或会话已被清理时返回 None；调用方据此决定是否回落本地推流地址。"""
+    with _lock:
+        client = _client
+    if client is not None and client.is_logged_in:
+        return client
+    return None
 
 
 def is_authenticated() -> bool:
@@ -262,6 +286,7 @@ def verify_current_session() -> AuthResult:
             session=session,
             profile=profile,
             device_license=device_license,
+            live_media=previous.live_media,
         )
         _auth_result = refreshed
         return refreshed
@@ -283,6 +308,8 @@ def logout() -> None:
             # 注销是正常生命周期事件，不向用户控制台输出一条调试 HTTP 日志。
             client.on_http = None
             client.logout()
+    except Exception:
+        pass
     finally:
         client.clear_session()
         client.close()

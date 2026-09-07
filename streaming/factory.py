@@ -31,16 +31,19 @@ def _resolve_audio_device(mic_name, auds):
     return auds[0] if auds else mic_name
 
 
-def create_pusher(mic_name=None, beauty=None, on_state=None):
+def create_pusher(mic_name=None, beauty=None, on_state=None, push_url=None):
     """按运行环境选择推流后端。
 
     :param mic_name: 当前选中的麦克风名（仅 ffmpeg 后端用于匹配 dshow 设备）
     :param beauty:   (bright, contrast, sat) 三元组，仅 ffmpeg 后端使用
     :param on_state: 状态回调 on_state(state, detail)
+    :param push_url: 推流地址。正式会话由后端短效签发（pdk.live_service 申请）；
+                     为空时回落本地配置地址（本地 MediaMTX / 开发场景）
     :return: (pusher, backend_name)；都不可用时返回 (None, None)
     """
+    url = push_url or RTMP_PUSH_URL
     if HAVE_AV:
-        p = PyAVRtmpPusher(RTMP_PUSH_URL, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
+        p = PyAVRtmpPusher(url, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
                            BASE_FPS, AUDIO_RATE, AUDIO_CHANNELS)
         p.on_state = on_state
         return p, "pyav"
@@ -48,7 +51,7 @@ def create_pusher(mic_name=None, beauty=None, on_state=None):
     if find_ffmpeg() is None:
         return None, None
 
-    p = FFmpegRtmpPusher(RTMP_PUSH_URL, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
+    p = FFmpegRtmpPusher(url, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
                          BASE_FPS, AUDIO_RATE, AUDIO_CHANNELS)
     _, auds = list_dshow_devices()
     audio_dev = _resolve_audio_device(mic_name, auds)

@@ -32,6 +32,12 @@ class FakeClient:
             "authorizationMode": "DEVICE_LICENSE",
             "effectiveStatus": "AVAILABLE",
             "configuredStatus": "ACTIVE",
+            "liveMedia": {
+                "enabled": True,
+                "status": "AVAILABLE",
+                "mediaServerAddress": "rtmp://127.0.0.1:1935",
+                "preferredPublishProtocol": "RTMP",
+            },
         }
 
     def login(self, password, **kwargs):
@@ -97,6 +103,13 @@ class DisabledLicenseClient(FakeClient):
         return {"status": "EXPIRED", "expireAt": "2026-01-01T00:00:00"}
 
 
+class NoMediaNodeClient(FakeClient):
+    def business_info(self):
+        info = super().business_info()
+        info["liveMedia"] = {"enabled": False, "status": "NO_AVAILABLE_NODE"}
+        return info
+
+
 SETTINGS = auth_service.PdkSettings(
     base_url="https://pdk.example.test",
     app_id=3,
@@ -128,6 +141,7 @@ class PdkAuthServiceTests(unittest.TestCase):
         )
         self.assertTrue(auth_service.is_authenticated())
         self.assertEqual("DEVICE_LICENSE", result.authorization_mode)
+        self.assertEqual("rtmp://127.0.0.1:1935", result.live_media.get("mediaServerAddress"))
         self.assertEqual("138****8000", result.masked_phone)
         self.assertIn(("login", "password", "CARD-KEY"), created[0].calls)
         self.assertIn("device_license_current", created[0].calls)
@@ -163,6 +177,17 @@ class PdkAuthServiceTests(unittest.TestCase):
         self.assertFalse(auth_service.is_authenticated())
         self.assertTrue(created[0].closed)
 
+    def test_live_business_requires_public_media_node(self):
+        created = []
+        with self.assertRaises(PdkClientError) as ctx:
+            auth_service.authenticate(
+                "13800138000", "password", "CARD", settings=SETTINGS,
+                client_factory=self._factory(NoMediaNodeClient, created),
+            )
+        self.assertEqual(50372, ctx.exception.code)
+        self.assertFalse(auth_service.is_authenticated())
+        self.assertTrue(created[0].closed)
+
     def test_verify_current_session_refreshes_snapshot(self):
         created = []
         auth_service.authenticate(
@@ -183,8 +208,7 @@ class PdkAuthServiceTests(unittest.TestCase):
             "13800138000", "password", "CARD", settings=SETTINGS,
             client_factory=self._factory(LogoutFailureClient, created),
         )
-        with self.assertRaises(PdkClientError):
-            auth_service.logout()
+        auth_service.logout()
         self.assertFalse(auth_service.is_authenticated())
         self.assertTrue(created[0].closed)
 

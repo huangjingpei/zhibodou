@@ -104,6 +104,7 @@ _ACTION_BY_CODE: dict[int, str] = {
     50350: "当前部署未启用该业务或缺少业务 Handler",
     50301: "当前套餐没有可用业务资源，稍后重试或联系平台补充",
     50302: "公司资源库存不足，联系平台补充资源",
+    50372: "当前没有可用直播媒体节点，稍后重试或联系管理员检查直播中心",
     50370: "MediaMTX 未启用，禁止开始推流",
     50371: "媒体服务控制失败，查询会话后再决定是否重试",
 }
@@ -476,6 +477,20 @@ class PdkClient:
     def business_info(self) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/client/business/by-app/{self.app_id}")
 
+    def live_media_info(self) -> dict[str, Any]:
+        """返回 ZHIBO_LIVE 登录前公开媒体信息。
+
+        该信息只用于服务发现和网络预检；最终推流 URL 必须继续通过
+        live_publish_ticket() 获取，不能由客户端自行拼接。
+        """
+        if self.app_id != 3:
+            raise PdkClientError(40370, "liveMedia 仅允许 appId=3 / ZHIBO_LIVE 查询")
+        info = self.business_info()
+        media = info.get("liveMedia") or {}
+        if not media:
+            raise PdkClientError(50372, "服务端未返回 ZHIBO_LIVE 媒体服务配置", data=info)
+        return media
+
     def ensure_business_available(self, *, expected_biz_code: str = "",
                                   expected_authorization_mode: str = "") -> dict[str, Any]:
         info = self.business_info()
@@ -737,6 +752,11 @@ def _demo() -> None:
     info = client.business_info()
     print(f"② 业务发现：{info.get('bizCode')} / {info.get('businessName')} "
           f"/ 授权模式={info.get('authorizationMode')}")
+    if app_id == 3:
+        media = info.get("liveMedia") or {}
+        print(f"   媒体服务：enabled={media.get('enabled')} "
+              f"protocol={media.get('preferredPublishProtocol')} "
+              f"address={media.get('mediaServerAddress')}")
 
     if not (phone and password):
         print("\n[跳过] 未设置 PDK_PHONE / PDK_PASSWORD，登录及后续鉴权示例略过。")

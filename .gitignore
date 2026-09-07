@@ -46,3 +46,6 @@ Thumbs.db
 ffmpeg.exe
 ffmpeg
 ffmpeg.exe~
+
+# ---- MediaMTX 本地部署二进制/证书（不进库） ----
+mediamtx-upgrade/

@@ -13,10 +13,11 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QPushButton, QLineEdit,
-    QComboBox, QSlider, QFrame, QScrollArea,
+    QComboBox, QSlider, QFrame, QScrollArea, QApplication,
 )
 from capture.resolution import get_cached_resolutions, ResProbeThread
 from core.config import (RTMP_PUSH_URL, RTMP_VIDEO_BITRATE, RTMP_SERVER_IP, RTMP_PORT)
+from pdk import live_service
 from processing.image import crop_to_portrait, beauty_process
 from ui.widgets import VolumeBar
 from ui import theme
@@ -59,7 +60,7 @@ class HostPanel(Panel):
         self.btn_start_host.clicked.connect(self.toggle_cam)
         left_lay.addWidget(self.btn_start_host)
 
-        self.lab_rtmp = QLabel(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
+        self.lab_rtmp = QLabel(self._push_addr_text())
         self.lab_rtmp.setWordWrap(True)
         self.lab_rtmp.setStyleSheet(theme.label_style(theme.FS_SMALL, theme.CYAN))
         left_lay.addWidget(self.lab_rtmp)
@@ -346,8 +347,12 @@ class HostPanel(Panel):
             if not self.host_stream.camera_ready:
                 QMessageBox.critical(self.lab_host_preview, "错误", "直播源启动失败！")
                 return
+            self.lab_rtmp.setText("正在向服务器申请推流地址…")
+            QApplication.processEvents()
             if not self.host_stream.start_streaming():
-                QMessageBox.critical(self.lab_host_preview, "错误", "推流服务启动失败！")
+                detail = self.host_stream.push_error or "未知错误"
+                QMessageBox.critical(self.lab_host_preview, "推流服务启动失败", detail)
+                self.lab_rtmp.setText(self._push_addr_text())
                 return
             self._set_stream_button(True)
             QMessageBox.information(self.lab_host_preview, "成功", "已切换线上直播源，将作为 RTMP 推流画面")
@@ -374,7 +379,7 @@ class HostPanel(Panel):
             # 停止推流不需要网络授权，保证授权服务异常时仍能立即止流。
             self.host_stream.stop_streaming()
             self._set_stream_button(False)
-            self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
+            self.lab_rtmp.setText(self._push_addr_text())
 
     def _start_camera_stream(self):
         from PyQt5.QtWidgets import QMessageBox
@@ -384,12 +389,16 @@ class HostPanel(Panel):
             if not self.host_stream.camera_ready:
                 QMessageBox.critical(self.lab_host_preview, "错误", "摄像头或直播源启动失败，请检查设备！")
                 return
+            self.lab_rtmp.setText("正在向服务器申请推流地址…")
+            QApplication.processEvents()
             if not self.host_stream.start_streaming():
-                QMessageBox.critical(self.lab_host_preview, "错误", "推流服务启动失败!")
+                detail = self.host_stream.push_error or "未知错误"
+                QMessageBox.critical(self.lab_host_preview, "推流服务启动失败", detail)
+                self.lab_rtmp.setText(self._push_addr_text())
                 return
             self._set_stream_button(True)
             backend = self.host_stream.push_backend or "未知"
-            self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{RTMP_PUSH_URL}")
+            self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{self._push_addr_text()}")
 
     def update_vol(self, vol):
         self.host_vol_bar.set_vol(vol)
@@ -398,6 +407,17 @@ class HostPanel(Panel):
         self.btn_start_host.setText("停止直播推流" if running else "开始直播推流")
         theme.set_button_role(self.btn_start_host, "danger" if running else "primary")
 
+    def _push_addr_text(self):
+        """推流地址展示文案。
+
+        安全要求（接入指南 10.2）：publishUrl 含短效票据，不进 UI/日志/剪贴板。
+        正式会话只显示会话号；本地 MediaMTX/开发场景才显示本地完整地址。"""
+        if live_service.is_backend_managed():
+            session_text = live_service.describe_session(self.host_stream.live_session_no)
+            base = "推流地址: 由后端动态签发（不显示）"
+            return f"{base}\n会话 {session_text}" if session_text else base
+        return f"RTMP推流地址(本地):\n{RTMP_PUSH_URL}"
+
     def check_push_state(self):
         """预览定时器顺带巡检推流状态：重连中提示、彻底断流则复位按钮。"""
         st = getattr(self.host_stream, "push_state", "idle")
@@ -405,23 +425,27 @@ class HostPanel(Panel):
             return
         self._last_push_state = st
         if st == "reconnecting":
-            self.lab_rtmp.setText(f"RTMP 连接中断，正在重连…\n{RTMP_PUSH_URL}")
+            self.lab_rtmp.setText(f"RTMP 连接中断，正在重连…\n{self._push_addr_text()}")
         elif st == "running":
             backend = self.host_stream.push_backend or "未知"
-            self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{RTMP_PUSH_URL}")
+            self.lab_rtmp.setText(f"RTMP推流中（后端:{backend}）:\n{self._push_addr_text()}")
         elif st == "fatal":
             err = self.host_stream.push_error or "连接中断"
             self.host_stream.stop_streaming()
             self._last_push_state = "idle"
             self._set_stream_button(False)
-            self.lab_rtmp.setText(f"RTMP推流地址:\n{RTMP_PUSH_URL}")
+            self.lab_rtmp.setText(self._push_addr_text())
             from PyQt5.QtWidgets import QMessageBox
+            if live_service.is_backend_managed():
+                server_hint = "推流服务器不可达、票据已失效或服务端已终止会话（会话已释放，可重新开始）"
+            else:
+                server_hint = f"服务器 {RTMP_SERVER_IP}:{RTMP_PORT} 不可达或已拒绝推流"
             QMessageBox.warning(
                 self.lab_host_preview, "推流已断开",
                 f"RTMP 推流中断且重连失败：\n{err}\n\n"
                 f"常见原因：\n"
                 f"1) 上行带宽不足以承载 {RTMP_VIDEO_BITRATE // 1000} kbps，可下调码率或分辨率\n"
-                f"2) 服务器 {RTMP_SERVER_IP}:{RTMP_PORT} 不可达或已拒绝推流\n"
+                f"2) {server_hint}\n"
                 f"3) 网络防火墙/NAT 掐断了长连接\n\n"
                 f"预览画面不受影响，可稍后重新点击「开始直播推流」。")
 

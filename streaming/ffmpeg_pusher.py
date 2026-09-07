@@ -10,6 +10,7 @@ import os
 import subprocess
 import threading
 import time
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -17,6 +18,14 @@ import numpy as np
 from core.config import RTMP_VIDEO_BITRATE, RTMP_AUDIO_BITRATE, RTMP_PRESET
 from core.runtime import app_dir, CREATE_NO_WINDOW
 from streaming.ffmpeg_tool import find_ffmpeg
+
+
+def _redact_rtmp_url(url):
+    try:
+        parsed = urlparse(url)
+        return f"{parsed.scheme}://{parsed.netloc}/***"
+    except Exception:
+        return "rtmp://***/***"
 
 
 class FFmpegRtmpPusher:
@@ -65,7 +74,7 @@ class FFmpegRtmpPusher:
             self.error = "ffmpeg 回退方案需要 Python 提供的视频帧"
             return False
         cmd = [
-            exe, "-y",
+            exe, "-hide_banner", "-loglevel", "warning", "-y",
             # 视频：从 stdin 接收 rawvideo（BGR24，尺寸即目标分辨率）
             "-f", "rawvideo", "-pix_fmt", "bgr24",
             "-s", f"{self.width}x{self.height}", "-r", str(self.fps),
@@ -103,7 +112,7 @@ class FFmpegRtmpPusher:
                                              args=(video_getter,), daemon=True)
         self._feed_thread.start()
         audio_mode = "dshow音频" if self.audio_device else "静音音频"
-        print(f"[ffmpeg推流] 已启动（视频走管道/{audio_mode}）-> {self.url}")
+        print(f"[ffmpeg推流] 已启动（视频走管道/{audio_mode}）-> {_redact_rtmp_url(self.url)}")
         return True
 
     def _feed_loop(self, video_getter):

@@ -21,6 +21,7 @@ from capture.resolution import get_cached_resolutions
 from core.config import (BASE_FPS, VIRTUAL_CAM_WIDTH, VIRTUAL_CAM_HEIGHT,
                          RTMP_PUSH_URL, AUDIO_RATE, AUDIO_CHANNELS,
                          MAX_VIDEO_BUFFER, SOURCE_TYPE_CAM, SOURCE_TYPE_LIVE)
+from pdk import live_service
 from processing.image import crop_to_portrait, beauty_process
 from processing.live import LiveStreamParser
 from streaming.factory import create_pusher
@@ -59,6 +60,9 @@ class HostStream:
         self.push_backend = None      # "pyav" / "ffmpeg" / None
         self.push_error = None
         self.push_state = "idle"      # idle / running / reconnecting / fatal
+        # 后端签发的推流票据（仅在内存中短暂保存，不落盘、不打印完整 URL）
+        self.publish_url = None
+        self.live_session_no = None
 
     def set_live_source(self, live_url):
         self.source_type = SOURCE_TYPE_LIVE
@@ -231,7 +235,7 @@ class HostStream:
         elif state == "reconnecting":
             self.push_error = detail
 
-    def _create_pusher(self):
+    def _create_pusher(self, push_url):
         """按运行环境选择推流后端：优先 PyAV（纯 Python），否则 ffmpeg。
 
         后端选择、dshow 音频设备名匹配等细节都下沉到 streaming.factory，
@@ -239,7 +243,8 @@ class HostStream:
         """
         return create_pusher(mic_name=self.audio_host.get_device_name(),
                              beauty=(self.bright, self.contrast, self.sat),
-                             on_state=self._on_push_state)
+                             on_state=self._on_push_state,
+                             push_url=push_url)
 
     def init_camera_only(self):
         """打开摄像头用于预览（不强制授权，推流时才校验授权）。
@@ -272,20 +277,41 @@ class HostStream:
         print("[主播] 摄像头初始化超时")
         return False
 
-    def start_streaming(self):
+    def start_streaming(self, title: str = ""):
         if not self.camera_ready:
             print("[主播] 摄像头未就绪")
             return False
         # 0) 清理上一轮遗留的推流器（例如上次断流后未及时回收）
         if self.pusher is not None:
             self.stop_streaming()
-        # 1) 选择推流后端
-        self.pusher, self.push_backend = self._create_pusher()
+        # 1) 推流地址：正式 PDK 会话向后端申请短效票据（publishUrl 不透明、
+        #    不复用、不落盘）；未登录 PDK（本地 MediaMTX/开发场景）回落本地地址。
+        push_url = RTMP_PUSH_URL
+        self.publish_url = None
+        self.live_session_no = None
+        if live_service.is_backend_managed():
+            try:
+                ticket = live_service.acquire_push_ticket(title=title)
+            except live_service.LivePushError as exc:
+                self.push_error = str(exc)
+                print(f"[主播] 申请推流地址失败: {exc}")
+                return False
+            push_url = ticket["publish_url"]
+            self.publish_url = push_url
+            self.live_session_no = ticket["session_no"]
+            print(f"[主播] 已获取推流票据: session={ticket['session_no'][:16]}… "
+                  f"ttl={ticket['ttl_seconds']}s host={live_service.redact_host(push_url)}")
+        # 2) 选择推流后端
+        self.pusher, self.push_backend = self._create_pusher(push_url)
         if self.pusher is None:
             self.push_error = "未找到可用的推流后端（需要安装 PyAV 或系统 ffmpeg）"
             print("[主播] " + self.push_error)
+            self._discard_ticket()
             return False
-        # 2) 仅 PyAV 后端需要 Python 采集音频；ffmpeg 后端由 ffmpeg 直接采集
+        if live_service.is_backend_managed() and hasattr(self.pusher, "max_reconnect"):
+            # 后端 publishUrl 是一次性短效票据，连接断开后不能复用旧 URL 重连。
+            self.pusher.max_reconnect = 0
+        # 3) 仅 PyAV 后端需要 Python 采集音频；ffmpeg 后端由 ffmpeg 直接采集
         if self.push_backend == "pyav":
             self.audio_host.set_push_queue(self.push_audio_queue)
             if not self.audio_host.start_mic_only():
@@ -294,7 +320,7 @@ class HostStream:
                 print("[主播] 麦克风启动成功")
         else:
             print("[主播] ffmpeg 后端将自行采集音频，跳过 Python 麦克风采集")
-        # 3) 启动推流
+        # 4) 启动推流
         audio_getter = self._pop_audio_chunk if self.push_backend == "pyav" else None
         ok = self.pusher.start(video_getter=self.produce_push_frame, audio_getter=audio_getter)
         if not ok:
@@ -302,12 +328,23 @@ class HostStream:
             print(f"[主播] 推流启动失败: {self.push_error}")
             self.pusher = None
             self.audio_host.stop()
+            self._discard_ticket()   # 票据未真正使用，释放服务端会话
             return False
         self.running = True
         self.push_state = "running"
         self.push_error = None
-        print(f"[主播] RTMP 推流已启动（后端: {self.push_backend}）-> {RTMP_PUSH_URL}")
+        # 安全要求：日志只记 host 与会话号，不输出完整 publishUrl。
+        print(f"[主播] RTMP 推流已启动（后端: {self.push_backend}）"
+              f" host={live_service.redact_host(push_url)}")
         return True
+
+    def _discard_ticket(self):
+        """丢弃当前票据并尽力释放服务端会话（启动失败/中断时调用）。"""
+        session_no = self.live_session_no
+        self.publish_url = None
+        self.live_session_no = None
+        if session_no:
+            live_service.release_stream(session_no)
 
     def start(self):
         return self.init_camera_only() and self.start_streaming()
@@ -338,6 +375,8 @@ class HostStream:
                 print(f"[主播] 停止推流异常: {e}")
             self.pusher = None
         self.audio_host.stop()
+        # 通知服务端结束直播会话（异步、尽力而为），刷新剩余次数由巡检完成。
+        self._discard_ticket()
         self.push_error = None
         self.push_state = "idle"
         print("[主播] 推流已停止（保留摄像头预览）")
@@ -352,6 +391,7 @@ class HostStream:
                 print(f"[主播] 停止推流异常: {e}")
             self.pusher = None
         self.audio_host.stop()
+        self._discard_ticket()
         if self.cap:
             self.cap.release()
             self.cap = None

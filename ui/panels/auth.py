@@ -64,11 +64,12 @@ class AuthPanel(Panel):
             return
         QMessageBox.information(
             self.auth_frame, "PDK 账户资料",
-            "手机号：%s\n业务：%s\n授权模式：%s\n状态：%s\n剩余次数：%s" % (
+            "手机号：%s\n业务：%s\n授权模式：%s\n状态：%s\n媒体服务：%s\n剩余次数：%s" % (
                 result.masked_phone,
                 result.business.get("bizCode") or result.session.get("bizCode") or "-",
                 result.authorization_mode or "-",
                 result.status,
+                result.live_media.get("mediaServerAddress") or "-",
                 result.remaining_calls,
             ),
         )
@@ -79,7 +80,10 @@ class AuthPanel(Panel):
         if auth_ok:
             result = pdk_auth.current_auth()
             detail = result.display_detail() if result else ""
-            self.lab_status.setText("状态: 已授权\n%s" % detail)
+            media = ""
+            if result and result.live_media.get("mediaServerAddress"):
+                media = "\n媒体: %s" % result.live_media.get("mediaServerAddress")
+            self.lab_status.setText("状态: 已授权\n%s%s" % (detail, media))
         else:
             self.lab_status.setText("状态: 未授权")
         if self.on_state:
