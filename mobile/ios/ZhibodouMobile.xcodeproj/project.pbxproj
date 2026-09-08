@@ -1,0 +1,337 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 54;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		13B07FBC1A68108700A75B9A /* AppDelegate.mm in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB01A68108700A75B9A /* AppDelegate.mm */; };
+		13B07FBD1A68108700A75B9A /* main.m in Sources */ = {isa = PBXBuildFile; fileRef = 13B07FB71A68108700A75B9A /* main.m */; };
+		A00100012D7F000100000001 /* PdkKeychainHelper.m in Sources */ = {isa = PBXBuildFile; fileRef = A00100022D7F000100000001 /* PdkKeychainHelper.m */; };
+		A00100032D7F000100000001 /* PdkDeviceModule.m in Sources */ = {isa = PBXBuildFile; fileRef = A00100042D7F000100000001 /* PdkDeviceModule.m */; };
+		A00100052D7F000100000001 /* PdkLiveManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A00100062D7F000100000001 /* PdkLiveManager.m */; };
+		A00100072D7F000100000001 /* PdkCameraPreviewView.m in Sources */ = {isa = PBXBuildFile; fileRef = A00100082D7F000100000001 /* PdkCameraPreviewView.m */; };
+		A00100092D7F000100000001 /* PdkCameraViewManager.m in Sources */ = {isa = PBXBuildFile; fileRef = A001000A2D7F000100000001 /* PdkCameraViewManager.m */; };
+		A001000B2D7F000100000001 /* PdkVideoEncoder.m in Sources */ = {isa = PBXBuildFile; fileRef = A001000C2D7F000100000001 /* PdkVideoEncoder.m */; };
+		A001000D2D7F000100000001 /* PdkAudioEncoder.m in Sources */ = {isa = PBXBuildFile; fileRef = A001000E2D7F000100000001 /* PdkAudioEncoder.m */; };
+		A001000F2D7F000100000001 /* PdkAmf0.m in Sources */ = {isa = PBXBuildFile; fileRef = A00100102D7F000100000001 /* PdkAmf0.m */; };
+		A00100112D7F000100000001 /* PdkFlvTag.m in Sources */ = {isa = PBXBuildFile; fileRef = A00100122D7F000100000001 /* PdkFlvTag.m */; };
+		A00100132D7F000100000001 /* PdkRtmpClient.m in Sources */ = {isa = PBXBuildFile; fileRef = A00100142D7F000100000001 /* PdkRtmpClient.m */; };
+		A00100152D7F000100000001 /* PdkLiveModule.mm in Sources */ = {isa = PBXBuildFile; fileRef = A00100162D7F000100000001 /* PdkLiveModule.mm */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		13B07F961A680F5B00A75B9A /* ZhibodouMobile.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ZhibodouMobile.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		13B07FAF1A68108700A75B9A /* AppDelegate.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = AppDelegate.h; path = ZhibodouMobile/AppDelegate.h; sourceTree = "<group>"; };
+		13B07FB01A68108700A75B9A /* AppDelegate.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; name = AppDelegate.mm; path = ZhibodouMobile/AppDelegate.mm; sourceTree = "<group>"; };
+		13B07FB71A68108700A75B9A /* main.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = main.m; path = ZhibodouMobile/main.m; sourceTree = "<group>"; };
+		A00100022D7F000100000001 /* PdkKeychainHelper.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkKeychainHelper.m; path = ZhibodouMobile/PdkKeychainHelper.m; sourceTree = "<group>"; };
+		A00100202D7F000100000001 /* PdkKeychainHelper.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkKeychainHelper.h; path = ZhibodouMobile/PdkKeychainHelper.h; sourceTree = "<group>"; };
+		A00100042D7F000100000001 /* PdkDeviceModule.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkDeviceModule.m; path = ZhibodouMobile/PdkDeviceModule.m; sourceTree = "<group>"; };
+		A00100212D7F000100000001 /* PdkDeviceModule.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkDeviceModule.h; path = ZhibodouMobile/PdkDeviceModule.h; sourceTree = "<group>"; };
+		A00100062D7F000100000001 /* PdkLiveManager.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkLiveManager.m; path = ZhibodouMobile/PdkLiveManager.m; sourceTree = "<group>"; };
+		A00100222D7F000100000001 /* PdkLiveManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkLiveManager.h; path = ZhibodouMobile/PdkLiveManager.h; sourceTree = "<group>"; };
+		A00100082D7F000100000001 /* PdkCameraPreviewView.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkCameraPreviewView.m; path = ZhibodouMobile/PdkCameraPreviewView.m; sourceTree = "<group>"; };
+		A00100232D7F000100000001 /* PdkCameraPreviewView.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkCameraPreviewView.h; path = ZhibodouMobile/PdkCameraPreviewView.h; sourceTree = "<group>"; };
+		A001000A2D7F000100000001 /* PdkCameraViewManager.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkCameraViewManager.m; path = ZhibodouMobile/PdkCameraViewManager.m; sourceTree = "<group>"; };
+		A00100242D7F000100000001 /* PdkCameraViewManager.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkCameraViewManager.h; path = ZhibodouMobile/PdkCameraViewManager.h; sourceTree = "<group>"; };
+		A001000C2D7F000100000001 /* PdkVideoEncoder.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkVideoEncoder.m; path = ZhibodouMobile/PdkVideoEncoder.m; sourceTree = "<group>"; };
+		A00100252D7F000100000001 /* PdkVideoEncoder.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkVideoEncoder.h; path = ZhibodouMobile/PdkVideoEncoder.h; sourceTree = "<group>"; };
+		A001000E2D7F000100000001 /* PdkAudioEncoder.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkAudioEncoder.m; path = ZhibodouMobile/PdkAudioEncoder.m; sourceTree = "<group>"; };
+		A00100262D7F000100000001 /* PdkAudioEncoder.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkAudioEncoder.h; path = ZhibodouMobile/PdkAudioEncoder.h; sourceTree = "<group>"; };
+		A00100102D7F000100000001 /* PdkAmf0.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkAmf0.m; path = ZhibodouMobile/PdkAmf0.m; sourceTree = "<group>"; };
+		A00100272D7F000100000001 /* PdkAmf0.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkAmf0.h; path = ZhibodouMobile/PdkAmf0.h; sourceTree = "<group>"; };
+		A00100122D7F000100000001 /* PdkFlvTag.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkFlvTag.m; path = ZhibodouMobile/PdkFlvTag.m; sourceTree = "<group>"; };
+		A00100282D7F000100000001 /* PdkFlvTag.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkFlvTag.h; path = ZhibodouMobile/PdkFlvTag.h; sourceTree = "<group>"; };
+		A00100142D7F000100000001 /* PdkRtmpClient.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; name = PdkRtmpClient.m; path = ZhibodouMobile/PdkRtmpClient.m; sourceTree = "<group>"; };
+		A00100292D7F000100000001 /* PdkRtmpClient.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkRtmpClient.h; path = ZhibodouMobile/PdkRtmpClient.h; sourceTree = "<group>"; };
+		A00100162D7F000100000001 /* PdkLiveModule.mm */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.objcpp; name = PdkLiveModule.mm; path = ZhibodouMobile/PdkLiveModule.mm; sourceTree = "<group>"; };
+		A001002A2D7F000100000001 /* PdkLiveModule.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; name = PdkLiveModule.h; path = ZhibodouMobile/PdkLiveModule.h; sourceTree = "<group>"; };
+		ED297162215061F000B7C4FE /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ZhibodouMobile/Info.plist; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		13B07F8C1A680F5B00A75B9A /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		13B07FAE1A68108700A75B9A /* ZhibodouMobile */ = {
+			isa = PBXGroup;
+			children = (
+				13B07FAF1A68108700A75B9A /* AppDelegate.h */,
+				13B07FB01A68108700A75B9A /* AppDelegate.mm */,
+				13B07FB71A68108700A75B9A /* main.m */,
+				ED297162215061F000B7C4FE /* Info.plist */,
+				A00100202D7F000100000001 /* PdkKeychainHelper.h */,
+				A00100022D7F000100000001 /* PdkKeychainHelper.m */,
+				A00100212D7F000100000001 /* PdkDeviceModule.h */,
+				A00100042D7F000100000001 /* PdkDeviceModule.m */,
+				A00100222D7F000100000001 /* PdkLiveManager.h */,
+				A00100062D7F000100000001 /* PdkLiveManager.m */,
+				A00100232D7F000100000001 /* PdkCameraPreviewView.h */,
+				A00100082D7F000100000001 /* PdkCameraPreviewView.m */,
+				A00100242D7F000100000001 /* PdkCameraViewManager.h */,
+				A001000A2D7F000100000001 /* PdkCameraViewManager.m */,
+				A00100252D7F000100000001 /* PdkVideoEncoder.h */,
+				A001000C2D7F000100000001 /* PdkVideoEncoder.m */,
+				A00100262D7F000100000001 /* PdkAudioEncoder.h */,
+				A001000E2D7F000100000001 /* PdkAudioEncoder.m */,
+				A00100272D7F000100000001 /* PdkAmf0.h */,
+				A00100102D7F000100000001 /* PdkAmf0.m */,
+				A00100282D7F000100000001 /* PdkFlvTag.h */,
+				A00100122D7F000100000001 /* PdkFlvTag.m */,
+				A00100292D7F000100000001 /* PdkRtmpClient.h */,
+				A00100142D7F000100000001 /* PdkRtmpClient.m */,
+				A001002A2D7F000100000001 /* PdkLiveModule.h */,
+				A00100162D7F000100000001 /* PdkLiveModule.mm */,
+			);
+			name = ZhibodouMobile;
+			sourceTree = "<group>";
+		};
+		2D16E6871FA4F8E400B85C8A /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		832341AE1AAA6A7D00865E4F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				13B07F961A680F5B00A75B9A /* ZhibodouMobile.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		83CBB9F61A601CBA00E9B192 = {
+			isa = PBXGroup;
+			children = (
+				13B07FAE1A68108700A75B9A /* ZhibodouMobile */,
+				2D16E6871FA4F8E400B85C8A /* Frameworks */,
+				832341AE1AAA6A7D00865E4F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		13B07F861A680F5B00A75B9A /* ZhibodouMobile */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "ZhibodouMobile" */;
+			buildPhases = (
+				13B07F871A680F5B00A75B9A /* Sources */,
+				13B07F8C1A680F5B00A75B9A /* Frameworks */,
+				13B07F8E1A680F5B00A75B9A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ZhibodouMobile;
+			productName = ZhibodouMobile;
+			productReference = 13B07F961A680F5B00A75B9A /* ZhibodouMobile.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		83CBB9F71A601CBA00E9B192 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					13B07F861A680F5B00A75B9A = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "ZhibodouMobile" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 83CBB9F61A601CBA00E9B192;
+			productRefGroup = 832341AE1AAA6A7D00865E4F /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				13B07F861A680F5B00A75B9A /* ZhibodouMobile */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		13B07F8E1A680F5B00A75B9A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		13B07F871A680F5B00A75B9A /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				13B07FBC1A68108700A75B9A /* AppDelegate.mm in Sources */,
+				13B07FBD1A68108700A75B9A /* main.m in Sources */,
+				A00100012D7F000100000001 /* PdkKeychainHelper.m in Sources */,
+				A00100032D7F000100000001 /* PdkDeviceModule.m in Sources */,
+				A00100052D7F000100000001 /* PdkLiveManager.m in Sources */,
+				A00100072D7F000100000001 /* PdkCameraPreviewView.m in Sources */,
+				A00100092D7F000100000001 /* PdkCameraViewManager.m in Sources */,
+				A001000B2D7F000100000001 /* PdkVideoEncoder.m in Sources */,
+				A001000D2D7F000100000001 /* PdkAudioEncoder.m in Sources */,
+				A001000F2D7F000100000001 /* PdkAmf0.m in Sources */,
+				A00100112D7F000100000001 /* PdkFlvTag.m in Sources */,
+				A00100132D7F000100000001 /* PdkRtmpClient.m in Sources */,
+				A00100152D7F000100000001 /* PdkLiveModule.mm in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		13B07F941A680F5B00A75B9A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_BITCODE = NO;
+				INFOPLIST_FILE = ZhibodouMobile/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+					"-lc++",
+					"-framework",
+					"AVFoundation",
+					"-framework",
+					"VideoToolbox",
+					"-framework",
+					"AudioToolbox",
+					"-framework",
+					"Security",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zhibodou.mobile;
+				PRODUCT_NAME = ZhibodouMobile;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		13B07F951A680F5B00A75B9A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CLANG_ENABLE_MODULES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				ENABLE_BITCODE = NO;
+				INFOPLIST_FILE = ZhibodouMobile/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+					"-lc++",
+					"-framework",
+					"AVFoundation",
+					"-framework",
+					"VideoToolbox",
+					"-framework",
+					"AudioToolbox",
+					"-framework",
+					"Security",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.zhibodou.mobile;
+				PRODUCT_NAME = ZhibodouMobile;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		83CBBA201A601CBA00E9B192 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = iphoneos;
+			};
+			name = Debug;
+		};
+		83CBBA211A601CBA00E9B192 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_CXX_LANGUAGE_STANDARD = "c++20";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				IPHONEOS_DEPLOYMENT_TARGET = 14.0;
+				SDKROOT = iphoneos;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		13B07F931A680F5B00A75B9A /* Build configuration list for PBXNativeTarget "ZhibodouMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				13B07F941A680F5B00A75B9A /* Debug */,
+				13B07F951A680F5B00A75B9A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		83CBB9FA1A601CBA00E9B192 /* Build configuration list for PBXProject "ZhibodouMobile" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				83CBBA201A601CBA00E9B192 /* Debug */,
+				83CBBA211A601CBA00E9B192 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = 83CBB9F71A601CBA00E9B192 /* Project object */;
+}

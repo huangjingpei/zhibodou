@@ -1,0 +1,21 @@
+# ---- 依赖 ----
+node_modules/
+
+# ---- 构建/编译产物 ----
+android/.gradle/
+android/app/.cxx/
+android/app/build/
+android/build/
+ios/build/
+ios/Pods/
+ios/main.jsbundle
+
+# ---- 本机文件 ----
+android/local.properties
+*.hprof
+*.log
+
+# ---- 密钥（debug.keystore 除外）----
+*.keystore
+!debug.keystore
+*.jks
