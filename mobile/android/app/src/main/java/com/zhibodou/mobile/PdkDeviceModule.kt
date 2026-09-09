@@ -1,4 +1,4 @@
-﻿package com.zhibodou.mobile
+package com.zhibodou.mobile
 
 import android.content.Context
 import android.content.SharedPreferences
@@ -48,9 +48,32 @@ class PdkDeviceModule(private val reactContext: ReactApplicationContext) :
         }
     }
 
+    @ReactMethod(isBlockingSynchronousMethod = true)
+    fun getDevConfigSync(): String {
+        val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getString(KEY_DEV_CONFIG, "") ?: ""
+    }
+
+    @ReactMethod
+    fun getDevConfig(promise: Promise) {
+        try {
+            val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            promise.resolve(prefs.getString(KEY_DEV_CONFIG, "") ?: "")
+        } catch (e: Exception) {
+            promise.reject("DEV_CONFIG_ERR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun saveDevConfig(configJson: String) {
+        val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_DEV_CONFIG, configJson).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "pdk_device_identity"
         private const val KEY_DEVICE_ID = "persisted_device_id"
+        private const val KEY_DEV_CONFIG = "persisted_dev_config"
 
         @Synchronized
         fun getStableDeviceId(context: Context): String {

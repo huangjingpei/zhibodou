@@ -105,23 +105,31 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun startPreview(isFront: Boolean, width: Int, height: Int, fps: Int, promise: Promise) {
         mainHandler.post {
-            try {
-                val camera = getOrCreateCamera()
-                isFrontFacing = isFront
-                val facing = if (isFront) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
-                val targetW = if (width > 0) width else 1080
-                val targetH = if (height > 0) height else 1920
-                val targetFps = if (fps > 0) fps else 30
-                val rotation = CameraHelper.getCameraOrientation(reactContext)
+            fun doStart(retries: Int) {
+                try {
+                    val camera = getOrCreateCamera()
+                    isFrontFacing = isFront
+                    val facing = if (isFront) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
+                    val targetW = if (width > 0) width else 1080
+                    val targetH = if (height > 0) height else 1920
+                    val targetFps = if (fps > 0) fps else 30
+                    val rotation = CameraHelper.getCameraOrientation(reactContext)
 
-                if (!camera.isOnPreview) {
-                    camera.startPreview(facing, targetW, targetH, targetFps, rotation)
+                    if (!camera.isOnPreview) {
+                        camera.startPreview(facing, targetW, targetH, targetFps, rotation)
+                    }
+                    promise.resolve(true)
+                } catch (e: Exception) {
+                    if (retries > 0) {
+                        Log.w(TAG, "startPreview surface not ready, retrying in 150ms... remaining: $retries")
+                        mainHandler.postDelayed({ doStart(retries - 1) }, 150)
+                    } else {
+                        Log.e(TAG, "startPreview error after retries: ${e.message}", e)
+                        promise.reject("PREVIEW_ERROR", e.message, e)
+                    }
                 }
-                promise.resolve(true)
-            } catch (e: Exception) {
-                Log.e(TAG, "startPreview error: ${e.message}", e)
-                promise.reject("PREVIEW_ERROR", e.message, e)
             }
+            doStart(4)
         }
     }
 

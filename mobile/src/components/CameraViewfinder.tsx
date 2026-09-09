@@ -6,57 +6,36 @@ import {
   TouchableWithoutFeedback,
   GestureResponderEvent,
   Animated,
-  useWindowDimensions,
 } from 'react-native';
 import { Colors } from '../theme/colors';
-import { Typography } from '../theme/typography';
-
+import { Typography, Radius, Spacing } from '../theme/typography';
 import { PdkCameraNativeView } from './PdkCameraNativeView';
 
 interface CameraViewfinderProps {
   isFrontCamera: boolean;
   isMuted: boolean;
-  isTorchOn: boolean;
+  isVideoEnabled?: boolean;
   resolutionLabel: string;
+  onScreenPress?: () => void;
 }
 
 /**
  * 现代全屏摄像头取景框组件
- * 深度集成 Android 原生硬件摄像头画面 (PdkCameraNativeView)、构图辅助九宫格线、轻触测光对焦光圈
- * 具备 9:16 标准视频画幅等比居中裁剪算法，消灭畸变与上下黑边
+ * 深度集成原生硬件摄像头画面 (PdkCameraNativeView)、构图辅助九宫格线、轻触测光对焦光圈
+ * 具备 9:16 标准视频画幅等比居中裁剪，消灭拉伸变形
+ * 支持轻触屏幕唤醒控制栏、视频画面隐私遮蔽
  */
 export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
-  isFrontCamera,
   isMuted,
-  isTorchOn,
-  resolutionLabel,
+  isVideoEnabled = true,
+  onScreenPress,
 }) => {
-  const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const [focusPos, setFocusPos] = useState<{ x: number; y: number } | null>(null);
   const [focusAnim] = useState(new Animated.Value(0));
 
-  // 9:16 标准推流画幅等比居中裁剪计算
-  const TARGET_ASPECT = 9 / 16;
-  const screenAspect = screenHeight > 0 ? screenWidth / screenHeight : TARGET_ASPECT;
-
-  let cameraWidth = screenWidth;
-  let cameraHeight = screenHeight;
-  let cameraLeft = 0;
-  let cameraTop = 0;
-
-  if (screenAspect < TARGET_ASPECT) {
-    // 手机屏幕比 9:16 更窄更长（现代全面屏）
-    cameraHeight = screenHeight;
-    cameraWidth = Math.round(screenHeight * TARGET_ASPECT);
-    cameraLeft = Math.round((screenWidth - cameraWidth) / 2);
-  } else {
-    // 屏幕比 9:16 更宽（如平板或横屏）
-    cameraWidth = screenWidth;
-    cameraHeight = Math.round(screenWidth / TARGET_ASPECT);
-    cameraTop = Math.round((screenHeight - cameraHeight) / 2);
-  }
-
   const handleTapToFocus = (e: GestureResponderEvent) => {
+    onScreenPress?.();
+
     const { locationX, locationY } = e.nativeEvent;
     setFocusPos({ x: locationX, y: locationY });
     focusAnim.setValue(0);
@@ -64,13 +43,13 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
     Animated.sequence([
       Animated.timing(focusAnim, {
         toValue: 1,
-        duration: 300,
+        duration: 250,
         useNativeDriver: true,
       }),
-      Animated.delay(1000),
+      Animated.delay(800),
       Animated.timing(focusAnim, {
         toValue: 0,
-        duration: 250,
+        duration: 200,
         useNativeDriver: true,
       }),
     ]).start(() => {
@@ -81,31 +60,30 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
   return (
     <TouchableWithoutFeedback onPress={handleTapToFocus}>
       <View style={styles.container}>
-        {/* 1. Android 原生硬件摄像头真实取景画面 (由底层 OpenGlView 精确执行 9:16 等比居中 Viewport 渲染) */}
-        <View style={styles.cameraCropContainer}>
+        {/* 1. 原生硬件摄像头真实取景画面 (9:16 等比全屏居中 Viewport) */}
+        <View style={styles.cameraCropContainer} pointerEvents="none">
           <PdkCameraNativeView style={StyleSheet.absoluteFillObject} />
         </View>
 
-        {/* 2. 状态标签与镜头指示 HUD */}
-        <View style={styles.overlayInfo} pointerEvents="none">
-          <Text style={styles.cameraWatermark}>
-            {isFrontCamera ? '📱 前置高清自拍 (镜像模式)' : '📷 后置高清主摄'} · {resolutionLabel}
-          </Text>
-
-          {isTorchOn && !isFrontCamera && (
-            <View style={styles.torchIndicator}>
-              <Text style={styles.torchText}>⚡ 补光灯已开启</Text>
+        {/* 2. 视频画面隐私遮蔽层 (当用户点击关闭画面时) */}
+        {!isVideoEnabled && (
+          <View style={styles.blackoutCover} pointerEvents="none">
+            <View style={styles.blackoutBadge}>
+              <Text style={styles.blackoutIcon}>🚫</Text>
+              <Text style={styles.blackoutTitle}>摄像头画面已暂停</Text>
+              <Text style={styles.blackoutSubtitle}>隐私遮蔽已开启 · 麦克风音频推流正常进行</Text>
             </View>
-          )}
+          </View>
+        )}
 
-          {isMuted && (
-            <View style={styles.mutedPill}>
-              <Text style={styles.mutedText}>🔇 麦克风已静音</Text>
-            </View>
-          )}
-        </View>
+        {/* 3. 静音提示 HUD */}
+        {isMuted && (
+          <View style={styles.mutedPill} pointerEvents="none">
+            <Text style={styles.mutedText}>🔇 麦克风已静音</Text>
+          </View>
+        )}
 
-        {/* 构图九宫格网格线 (Rule of Thirds) */}
+        {/* 4. 构图九宫格网格线 (Rule of Thirds) */}
         <View style={styles.gridOverlay} pointerEvents="none">
           <View style={[styles.gridLineH, { top: '33.33%' }]} />
           <View style={[styles.gridLineH, { top: '66.66%' }]} />
@@ -113,15 +91,15 @@ export const CameraViewfinder: React.FC<CameraViewfinderProps> = ({
           <View style={[styles.gridLineV, { left: '66.66%' }]} />
         </View>
 
-        {/* 点击测光对焦方框动画 */}
+        {/* 5. 点击测光对焦方框动画 */}
         {focusPos && (
           <Animated.View
             pointerEvents="none"
             style={[
               styles.focusBox,
               {
-                left: focusPos.x - 30,
-                top: focusPos.y - 30,
+                left: focusPos.x - 36,
+                top: focusPos.y - 36,
                 opacity: focusAnim,
                 transform: [
                   {
@@ -151,68 +129,47 @@ const styles = StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     overflow: 'hidden',
   },
-  overlayInfo: {
+  blackoutCover: {
     ...StyleSheet.absoluteFillObject,
-    alignItems: 'center',
-    paddingTop: 108,
-  },
-  simulatedCamera: {
-    flex: 1,
+    backgroundColor: 'rgba(5, 7, 13, 0.94)',
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#0d131f',
+    zIndex: 5,
   },
-  frontMirror: {
-    transform: [{ scaleX: -1 }],
-  },
-  lensGridCrosshair: {
-    width: 44,
-    height: 44,
-    justifyContent: 'center',
+  blackoutBadge: {
     alignItems: 'center',
-    opacity: 0.25,
-  },
-  crosshairH: {
-    position: 'absolute',
-    width: 24,
-    height: 1,
-    backgroundColor: Colors.textPrimary,
-  },
-  crosshairV: {
-    position: 'absolute',
-    width: 1,
-    height: 24,
-    backgroundColor: Colors.textPrimary,
-  },
-  cameraWatermark: {
-    ...Typography.bodySmall,
-    color: 'rgba(255, 255, 255, 0.35)',
-    marginTop: 16,
-    letterSpacing: 0.8,
-  },
-  torchIndicator: {
-    position: 'absolute',
-    top: 100,
-    backgroundColor: 'rgba(245, 158, 11, 0.25)',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    paddingHorizontal: Spacing.xl,
+    paddingVertical: Spacing.lg,
+    borderRadius: Radius.lg,
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.5)',
+    borderColor: 'rgba(255, 255, 255, 0.1)',
   },
-  torchText: {
-    ...Typography.badge,
-    color: Colors.warningYellow,
+  blackoutIcon: {
+    fontSize: 42,
+    marginBottom: Spacing.sm,
+  },
+  blackoutTitle: {
+    ...Typography.h2,
+    color: Colors.textPrimary,
+    marginBottom: 4,
+  },
+  blackoutSubtitle: {
+    ...Typography.bodySmall,
+    color: Colors.textMuted,
+    fontSize: 12,
   },
   mutedPill: {
     position: 'absolute',
     bottom: 140,
+    alignSelf: 'center',
     backgroundColor: 'rgba(239, 68, 68, 0.25)',
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 20,
     borderWidth: 1,
     borderColor: 'rgba(239, 68, 68, 0.5)',
+    zIndex: 6,
   },
   mutedText: {
     ...Typography.badge,
@@ -220,35 +177,37 @@ const styles = StyleSheet.create({
   },
   gridOverlay: {
     ...StyleSheet.absoluteFillObject,
+    opacity: 0.15,
   },
   gridLineH: {
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 0.5,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    height: 1,
+    backgroundColor: Colors.textPrimary,
   },
   gridLineV: {
     position: 'absolute',
     top: 0,
     bottom: 0,
-    width: 0.5,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    width: 1,
+    backgroundColor: Colors.textPrimary,
   },
   focusBox: {
     position: 'absolute',
-    width: 60,
-    height: 60,
+    width: 72,
+    height: 72,
     borderWidth: 1.5,
-    borderColor: Colors.primary,
+    borderColor: Colors.warningYellow,
     borderRadius: 8,
     justifyContent: 'center',
     alignItems: 'center',
+    zIndex: 10,
   },
   focusCenterDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: Colors.primary,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: Colors.warningYellow,
   },
 });

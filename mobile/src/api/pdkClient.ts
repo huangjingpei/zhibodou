@@ -86,7 +86,7 @@ export class PdkClient {
   public static readonly DEFAULT_LOCAL_URL = 'http://192.168.3.148:8080';
   public static readonly PRODUCTION_URL = 'https://pdk.graddu.com';
 
-  constructor(env: PdkEnv = PdkEnv.LOCAL_DEBUG) {
+  constructor(env: PdkEnv = PdkEnv.PRODUCTION) {
     this.config = {
       baseUrl:
         env === PdkEnv.PRODUCTION
@@ -636,5 +636,5 @@ export class PdkClient {
   }
 }
 
-// 导出全局单例 (开发调试环境默认接入本机 192.168.3.148:8080)
-export const pdkClient = new PdkClient(PdkEnv.LOCAL_DEBUG);
+// 导出全局单例 (默认接入官方生产环境 https://pdk.graddu.com)
+export const pdkClient = new PdkClient(PdkEnv.PRODUCTION);

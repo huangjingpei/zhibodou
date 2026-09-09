@@ -13,6 +13,7 @@
 #import <arpa/inet.h>
 #import <netdb.h>
 #import <unistd.h>
+#import <Security/SecureTransport.h>
 
 #define RTMP_OUT_CHUNK_SIZE 4096
 
@@ -31,6 +32,8 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 
 @interface PdkRtmpClient () {
     int _socketFd;
+    BOOL _isTls;
+    SSLContextRef _sslContext;
     dispatch_queue_t _socketQueue;
     dispatch_source_t _bitrateTimer;
     uint32_t _streamId;
@@ -58,12 +61,49 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 }
 @end
 
+static OSStatus SocketSSLRead(SSLConnectionRef connection, void *data, size_t *dataLength) {
+    int fd = (int)(intptr_t)connection;
+    size_t bytesToRead = *dataLength;
+    ssize_t bytesRead = recv(fd, data, bytesToRead, 0);
+    if (bytesRead > 0) {
+        *dataLength = (size_t)bytesRead;
+        return noErr;
+    } else if (bytesRead == 0) {
+        *dataLength = 0;
+        return errSSLClosedGraceful;
+    } else {
+        *dataLength = 0;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return errSSLWouldBlock;
+        }
+        return errSecIO;
+    }
+}
+
+static OSStatus SocketSSLWrite(SSLConnectionRef connection, const void *data, size_t *dataLength) {
+    int fd = (int)(intptr_t)connection;
+    size_t bytesToWrite = *dataLength;
+    ssize_t bytesWritten = send(fd, data, bytesToWrite, 0);
+    if (bytesWritten > 0) {
+        *dataLength = (size_t)bytesWritten;
+        return noErr;
+    } else {
+        *dataLength = 0;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return errSSLWouldBlock;
+        }
+        return errSecIO;
+    }
+}
+
 @implementation PdkRtmpClient
 
 - (instancetype)init {
     self = [super init];
     if (self) {
         _socketFd = -1;
+        _isTls = NO;
+        _sslContext = NULL;
         _streamId = 1;
         _socketQueue = dispatch_queue_create("com.zhibodou.mobile.rtmpSocketQueue", DISPATCH_QUEUE_SERIAL);
     }
@@ -79,10 +119,24 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 }
 
 - (BOOL)parseRtmpUrl:(NSString *)url {
-    // 格式: rtmp://host[:port]/app/streamKey
-    if (![url hasPrefix:@"rtmp://"]) return NO;
+    // 格式: rtmp://host[:port]/app/streamKey 或 rtmps://host[:port]/app/streamKey (TLS 加密)
+    BOOL isTls = NO;
+    NSString *withoutScheme = nil;
+    int defaultPort = 1935;
 
-    NSString *withoutScheme = [url substringFromIndex:7];
+    if ([url hasPrefix:@"rtmps://"]) {
+        isTls = YES;
+        withoutScheme = [url substringFromIndex:8];
+        defaultPort = 443;
+    } else if ([url hasPrefix:@"rtmp://"]) {
+        isTls = NO;
+        withoutScheme = [url substringFromIndex:7];
+        defaultPort = 1935;
+    } else {
+        return NO;
+    }
+
+    _isTls = isTls;
     NSRange firstSlash = [withoutScheme rangeOfString:@"/"];
     if (firstSlash.location == NSNotFound) return NO;
 
@@ -91,7 +145,7 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 
     NSArray *hostPortParts = [hostPort componentsSeparatedByString:@":"];
     _host = hostPortParts[0];
-    _port = hostPortParts.count > 1 ? [hostPortParts[1] intValue] : 1935;
+    _port = hostPortParts.count > 1 ? [hostPortParts[1] intValue] : defaultPort;
 
     NSArray *pathParts = [path componentsSeparatedByString:@"/"];
     if (pathParts.count < 2) {
@@ -102,7 +156,7 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
         _streamKey = [path substringFromIndex:_appName.length + 1];
     }
 
-    _tcUrl = [NSString stringWithFormat:@"rtmp://%@:%d/%@", _host, _port, _appName];
+    _tcUrl = [NSString stringWithFormat:@"%@://%@:%d/%@", _isTls ? @"rtmps" : @"rtmp", _host, _port, _appName];
     return YES;
 }
 
@@ -118,7 +172,7 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
     }
 
     if (![self parseRtmpUrl:url]) {
-        [self.delegate rtmpClientDidFailWithError:@"非法 RTMP 地址格式"];
+        [self.delegate rtmpClientDidFailWithError:@"非法 RTMP/RTMPS 地址格式"];
         return NO;
     }
 
@@ -138,7 +192,8 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 }
 
 - (void)performConnectionPipeline {
-    NSLog(@"[PdkRtmpClient] 正在连接 RTMP 服务器: %@:%d (App: %@, StreamKey: %@)", _host, _port, _appName, _streamKey);
+    NSLog(@"[PdkRtmpClient] 正在连接 %@ 服务器: %@:%d (App: %@, StreamKey: %@)",
+          self->_isTls ? @"RTMPS (TLS 加密)" : @"RTMP", self->_host, self->_port, self->_appName, self->_streamKey);
 
     // 1. DNS 解析与 Socket 创建
     struct addrinfo hints, *res;
@@ -179,6 +234,31 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
     }
     freeaddrinfo(res);
 
+    // 2.1 若为 RTMPS，建立 TLS/SSL 传输加密通道
+    if (_isTls) {
+        NSLog(@"[PdkRtmpClient] 正在协商 RTMPS TLS/SSL 安全握手...");
+        _sslContext = SSLCreateContext(kCFAllocatorDefault, kSSLClientSide, kSSLStreamType);
+        if (!_sslContext) {
+            [self notifyError:@"创建 TLS SSLContext 失败"];
+            return;
+        }
+
+        SSLSetIOFuncs(_sslContext, SocketSSLRead, SocketSSLWrite);
+        SSLSetConnection(_sslContext, (SSLConnectionRef)(intptr_t)_socketFd);
+        SSLSetPeerDomainName(_sslContext, [_host UTF8String], strlen([_host UTF8String]));
+
+        OSStatus sslStatus;
+        do {
+            sslStatus = SSLHandshake(_sslContext);
+        } while (sslStatus == errSSLWouldBlock);
+
+        if (sslStatus != noErr) {
+            [self notifyError:[NSString stringWithFormat:@"RTMPS TLS 握手失败 (代码: %d)", (int)sslStatus]];
+            return;
+        }
+        NSLog(@"[PdkRtmpClient] RTMPS TLS/SSL 传输安全加密链路建立成功！");
+    }
+
     // 3. RTMP 握手协议 (C0/C1 -> S0/S1/S2 -> C2)
     if (![self performRtmpHandshake]) {
         [self notifyError:@"RTMP 协议握手失败"];
@@ -216,7 +296,7 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 
     _isConnected = YES;
     _isConnecting = NO;
-    NSLog(@"[PdkRtmpClient] RTMP 推流通道成功建立，开始音视频传输！");
+    NSLog(@"[PdkRtmpClient] RTMP%@ 推流通道成功建立，开始音视频传输！", self->_isTls ? @"S (加密)" : @"");
 
     [self startBitrateTimer];
 
@@ -301,7 +381,7 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 - (BOOL)readConnectResponse {
     // 读取 RTMP 数据块，等待针对 connect(1.0) 的 _result 响应
     uint8_t buffer[2048];
-    ssize_t received = recv(_socketFd, buffer, sizeof(buffer), 0);
+    ssize_t received = [self readSomeBytes:buffer length:sizeof(buffer)];
     return received > 0;
 }
 
@@ -336,10 +416,9 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
 
 - (BOOL)readCreateStreamResponse {
     uint8_t buffer[2048];
-    ssize_t received = recv(_socketFd, buffer, sizeof(buffer), 0);
+    ssize_t received = [self readSomeBytes:buffer length:sizeof(buffer)];
     if (received <= 0) return NO;
 
-    // 解析 streamId (默认回退 1)
     _streamId = 1;
     return YES;
 }
@@ -474,7 +553,7 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
     }
 }
 
-#pragma mark - 底层 Socket I/O
+#pragma mark - 底层 Socket & TLS I/O
 
 - (BOOL)sendRawData:(NSData *)data {
     if (_socketFd < 0 || data.length == 0) return NO;
@@ -486,14 +565,26 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
     const char *ptr = (const char *)buffer;
 
     while (totalSent < length) {
-        ssize_t sent = send(_socketFd, ptr + totalSent, length - totalSent, 0);
-        if (sent <= 0) {
-            NSLog(@"[PdkRtmpClient] Socket 发送失败: %s", strerror(errno));
-            [self handleNetworkDisconnect];
-            return NO;
+        if (_isTls && _sslContext) {
+            size_t processed = 0;
+            OSStatus status = SSLWrite(_sslContext, ptr + totalSent, length - totalSent, &processed);
+            if (status != noErr && status != errSSLWouldBlock) {
+                NSLog(@"[PdkRtmpClient] TLS 发送失败: %d", (int)status);
+                [self handleNetworkDisconnect];
+                return NO;
+            }
+            totalSent += processed;
+            _bytesSentSinceLastCheck += (uint32_t)processed;
+        } else {
+            ssize_t sent = send(_socketFd, ptr + totalSent, length - totalSent, 0);
+            if (sent <= 0) {
+                NSLog(@"[PdkRtmpClient] Socket 发送失败: %s", strerror(errno));
+                [self handleNetworkDisconnect];
+                return NO;
+            }
+            totalSent += sent;
+            _bytesSentSinceLastCheck += (uint32_t)sent;
         }
-        totalSent += sent;
-        _bytesSentSinceLastCheck += (uint32_t)sent;
     }
     return YES;
 }
@@ -503,14 +594,37 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
     char *ptr = (char *)buffer;
 
     while (totalRead < length) {
-        ssize_t n = recv(_socketFd, ptr + totalRead, length - totalRead, 0);
-        if (n <= 0) {
-            NSLog(@"[PdkRtmpClient] Socket 接收失败: %s", strerror(errno));
-            return NO;
+        if (_isTls && _sslContext) {
+            size_t processed = 0;
+            OSStatus status = SSLRead(_sslContext, ptr + totalRead, length - totalRead, &processed);
+            if (status != noErr && status != errSSLWouldBlock) {
+                NSLog(@"[PdkRtmpClient] TLS 接收失败: %d", (int)status);
+                return NO;
+            }
+            totalRead += processed;
+        } else {
+            ssize_t n = recv(_socketFd, ptr + totalRead, length - totalRead, 0);
+            if (n <= 0) {
+                NSLog(@"[PdkRtmpClient] Socket 接收失败: %s", strerror(errno));
+                return NO;
+            }
+            totalRead += n;
         }
-        totalRead += n;
     }
     return YES;
+}
+
+- (ssize_t)readSomeBytes:(void *)buffer length:(size_t)maxLength {
+    if (_isTls && _sslContext) {
+        size_t processed = 0;
+        OSStatus status = SSLRead(_sslContext, buffer, maxLength, &processed);
+        if (status == noErr || status == errSSLWouldBlock) {
+            return (ssize_t)processed;
+        }
+        return -1;
+    } else {
+        return recv(_socketFd, buffer, maxLength, 0);
+    }
 }
 
 #pragma mark - 统计与状态
@@ -565,6 +679,12 @@ typedef NS_ENUM(uint8_t, RtmpMessageType) {
     _isConnected = NO;
     _isConnecting = NO;
     [self stopBitrateTimer];
+
+    if (_sslContext) {
+        SSLClose(_sslContext);
+        CFRelease(_sslContext);
+        _sslContext = NULL;
+    }
 
     if (_socketFd >= 0) {
         close(_socketFd);

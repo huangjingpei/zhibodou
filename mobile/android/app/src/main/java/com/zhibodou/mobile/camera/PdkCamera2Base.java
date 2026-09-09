@@ -121,7 +121,7 @@ public abstract class PdkCamera2Base {
     /**
      * Must be called before prepareAudio.
      *
-     * @param microphoneMode mode to work accord to audioEncoder. By default ASYNC:
+     * @param microphoneMode mode to work accord to audioEncoder. By default, ASYNC:
      * SYNC using same thread. This mode could solve choppy audio or AudioEncoder frame discarded.
      * ASYNC using other thread.
      */

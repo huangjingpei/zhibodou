@@ -31,21 +31,19 @@ export const FPS_PRESETS = [
 interface SettingsSheetProps {
   visible: boolean;
   settings: VideoAudioSettings;
-  currentEnv: PdkEnv;
+  currentEnv?: PdkEnv;
   onUpdateSettings: (newSettings: Partial<VideoAudioSettings>) => void;
-  onUpdateEnv: (env: PdkEnv) => void;
+  onUpdateEnv?: (env: PdkEnv) => void;
   onClose: () => void;
 }
 
 /**
- * 底部毛玻璃画质与环境设置抽屉
+ * 底部毛玻璃画质与音视频编码设置抽屉
  */
 export const SettingsSheet: React.FC<SettingsSheetProps> = ({
   visible,
   settings,
-  currentEnv,
   onUpdateSettings,
-  onUpdateEnv,
   onClose,
 }) => {
   return (
@@ -66,7 +64,7 @@ export const SettingsSheet: React.FC<SettingsSheetProps> = ({
           <View style={styles.header}>
             <View style={styles.dragIndicator} />
             <View style={styles.headerRow}>
-              <Text style={styles.headerTitle}>⚙️ 音视频推流与系统设置</Text>
+              <Text style={styles.headerTitle}>⚙️ 音视频编码与推流画质设置</Text>
               <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
                 <Text style={styles.closeBtnText}>✕</Text>
               </TouchableOpacity>
@@ -99,16 +97,16 @@ export const SettingsSheet: React.FC<SettingsSheetProps> = ({
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>视频上行码率 (Bitrate)</Text>
               <View style={styles.chipsCol}>
-                {BITRATE_PRESETS.map((bit) => {
-                  const isSelected = settings.bitrateKbps === bit.value;
+                {BITRATE_PRESETS.map((item) => {
+                  const isSelected = settings.bitrateKbps === item.value;
                   return (
                     <TouchableOpacity
-                      key={bit.value}
+                      key={item.value}
                       style={[styles.chipFull, isSelected && styles.chipActive]}
-                      onPress={() => onUpdateSettings({ bitrateKbps: bit.value })}
+                      onPress={() => onUpdateSettings({ bitrateKbps: item.value })}
                     >
                       <Text style={[styles.chipText, isSelected && styles.chipTextActive]}>
-                        {bit.label}
+                        {item.label}
                       </Text>
                     </TouchableOpacity>
                   );
@@ -116,7 +114,7 @@ export const SettingsSheet: React.FC<SettingsSheetProps> = ({
               </View>
             </View>
 
-            {/* 3. 目标帧率 */}
+            {/* 3. 编码帧率 */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>推流帧率 (FPS)</Text>
               <View style={styles.chipsRow}>
@@ -134,46 +132,6 @@ export const SettingsSheet: React.FC<SettingsSheetProps> = ({
                     </TouchableOpacity>
                   );
                 })}
-              </View>
-            </View>
-
-            {/* 4. 通信与流媒体环境 */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>PDK 平台运行环境</Text>
-              <View style={styles.chipsCol}>
-                <TouchableOpacity
-                  style={[
-                    styles.chipFull,
-                    currentEnv === PdkEnv.PRODUCTION && styles.chipActiveGreen,
-                  ]}
-                  onPress={() => onUpdateEnv(PdkEnv.PRODUCTION)}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      currentEnv === PdkEnv.PRODUCTION && styles.chipTextActiveGreen,
-                    ]}
-                  >
-                    🚀 生产环境 (pdk.graddu.com)
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.chipFull,
-                    currentEnv === PdkEnv.LOCAL_DEBUG && styles.chipActiveYellow,
-                  ]}
-                  onPress={() => onUpdateEnv(PdkEnv.LOCAL_DEBUG)}
-                >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      currentEnv === PdkEnv.LOCAL_DEBUG && styles.chipTextActiveYellow,
-                    ]}
-                  >
-                    🛠️ 本地调试 (192.168.3.148:8080)
-                  </Text>
-                </TouchableOpacity>
               </View>
             </View>
 

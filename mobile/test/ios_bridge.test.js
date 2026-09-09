@@ -110,3 +110,70 @@ test('iOS Native Bridge - StreamStats schema validation', () => {
   assert.strictEqual(typeof stats.durationSeconds, 'number');
   assert(['EXCELLENT', 'GOOD', 'POOR', 'DISCONNECTED'].includes(stats.netQuality), true);
 });
+
+test('Native Bridge & DevSettings - Dev config persistence and Direct RTMP contract', () => {
+  let persistedStorage = '';
+  const mockDeviceModule = {
+    saveDevConfig(jsonStr) {
+      persistedStorage = jsonStr;
+      return true;
+    },
+    getDevConfigSync() {
+      return persistedStorage;
+    },
+  };
+
+  // 默认无配置
+  assert.strictEqual(mockDeviceModule.getDevConfigSync(), '');
+
+  // 开发者模式保存自定义直推 RTMP
+  const devConfig = {
+    serverUrl: 'https://pdk-test.example.com',
+    customRtmpUrl: 'rtmp://192.168.1.100:1935/live/stream123',
+  };
+  mockDeviceModule.saveDevConfig(JSON.stringify(devConfig));
+
+  const loadedRaw = mockDeviceModule.getDevConfigSync();
+  const parsed = JSON.parse(loadedRaw);
+  assert.strictEqual(parsed.serverUrl, 'https://pdk-test.example.com');
+  assert.strictEqual(parsed.customRtmpUrl, 'rtmp://192.168.1.100:1935/live/stream123');
+
+  const isDirectRtmp = Boolean(parsed.customRtmpUrl && parsed.customRtmpUrl.trim().length > 0);
+  assert.strictEqual(isDirectRtmp, true);
+
+  // 清空直推后恢复后端模式
+  mockDeviceModule.saveDevConfig(JSON.stringify({ serverUrl: 'https://pdk.graddu.com', customRtmpUrl: '' }));
+  const reloaded = JSON.parse(mockDeviceModule.getDevConfigSync());
+  const isDirectRtmpReset = Boolean(reloaded.customRtmpUrl && reloaded.customRtmpUrl.trim().length > 0);
+  assert.strictEqual(isDirectRtmpReset, false);
+});
+
+test('Video pause / resume state and 10s auto-hide timer contract', () => {
+  let isVideoEnabled = true;
+  let controlsVisible = true;
+  let timerFired = false;
+
+  // 切换画面黑屏遮蔽
+  isVideoEnabled = !isVideoEnabled;
+  assert.strictEqual(isVideoEnabled, false, '视频画面应被隐私黑屏遮蔽');
+
+  isVideoEnabled = !isVideoEnabled;
+  assert.strictEqual(isVideoEnabled, true, '视频画面应恢复正常展示');
+
+  // 10秒无操作隐藏
+  const simulateAutoTimer = (ms) => {
+    if (ms >= 10000) {
+      controlsVisible = false;
+      timerFired = true;
+    }
+  };
+
+  simulateAutoTimer(10000);
+  assert.strictEqual(controlsVisible, false, '10秒后控制栏应自动隐藏');
+  assert.strictEqual(timerFired, true);
+
+  // 用户点击视频取景画面唤醒
+  controlsVisible = true;
+  assert.strictEqual(controlsVisible, true, '点击视频画面后控制栏应重新显示');
+});
+

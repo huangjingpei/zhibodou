@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -14,39 +14,87 @@ import { Colors } from '../theme/colors';
 import { Typography, Radius, Spacing } from '../theme/typography';
 import { pdkClient, PdkClientError } from '../api/pdkClient';
 import { deviceService } from '../services/deviceService';
-import { LoginResult, PdkEnv } from '../api/types';
+import { LoginResult } from '../api/types';
+import { ZliveLogo } from '../components/ZliveLogo';
+import { DevModeModal } from '../components/DevModeModal';
+import { devSettingsService } from '../services/devSettingsService';
+import { AgreementModal, AgreementType } from '../components/AgreementModal';
 
 interface LoginScreenProps {
   onLoginSuccess: (result: LoginResult) => void;
 }
 
 /**
- * 现代暗色风格登录与设备卡密激活页面
- * 自动识别 40380 状态码并弹出专属卡密绑定激活层
+ * 现代暗色风格登录与工作站席位授权接入页面
+ * 集成 Zlive 多彩品牌图标与合规协议验证
+ * 支持连续点击 Logo 6 次呼出高级网络与流媒体设置
  */
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [phone, setPhone] = useState('13800000000');
-  const [password, setPassword] = useState('13800000000');
-  const [cardKey, setCardKey] = useState('PDK-0CFB-4792-B745');
+  const [password, setPassword] = useState('123456');
+  const [cardKey, setCardKey] = useState('');
   const [needCardKey, setNeedCardKey] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
-  const [env, setEnv] = useState<PdkEnv>(pdkClient.getEnvironment());
-  const [localHost, setLocalHost] = useState('192.168.3.148:8080');
+
+  // 用户服务协议与隐私政策合规状态
+  const [agreedToTerms, setAgreedToTerms] = useState(false);
+  const [agreementModalVisible, setAgreementModalVisible] = useState(false);
+  const [agreementType, setAgreementType] = useState<AgreementType>('TERMS');
+
+  // 连续轻点 Logo 6 次开启高级网络设置
+  const [tapCount, setTapCount] = useState(0);
+  const [devHint, setDevHint] = useState('');
+  const [devModalVisible, setDevModalVisible] = useState(false);
+  const tapTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const deviceId = deviceService.getDeviceId();
 
-  const handleToggleEnv = () => {
-    const nextEnv = env === PdkEnv.PRODUCTION ? PdkEnv.LOCAL_DEBUG : PdkEnv.PRODUCTION;
-    setEnv(nextEnv);
-    pdkClient.setEnvironment(
-      nextEnv,
-      nextEnv === PdkEnv.LOCAL_DEBUG ? `http://${localHost.trim()}` : undefined
-    );
+  const handleLogoPress = () => {
+    if (tapTimerRef.current) {
+      clearTimeout(tapTimerRef.current);
+    }
+
+    const nextCount = tapCount + 1;
+    setTapCount(nextCount);
+
+    if (nextCount >= 6) {
+      setDevModalVisible(true);
+      setTapCount(0);
+      setDevHint('');
+      return;
+    }
+
+    if (nextCount >= 3) {
+      setDevHint(`已连续轻点 ${nextCount} 次，再点 ${6 - nextCount} 次开启高级网络设置`);
+    }
+
+    tapTimerRef.current = setTimeout(() => {
+      setTapCount(0);
+      setDevHint('');
+    }, 3500);
   };
 
   const handleLogin = async () => {
     setErrorMessage('');
+
+    // 合规性前置检查：必须同意用户协议与隐私政策
+    if (!agreedToTerms) {
+      setErrorMessage('请先阅读并勾选同意《用户服务协议》与《隐私保护政策》');
+      return;
+    }
+
+    // 若高级网络设置配置了自定义 RTMP 直推地址，直接进入推流室
+    if (devSettingsService.isDirectRtmp()) {
+      onLoginSuccess({
+        tokenName: 'satoken',
+        tokenValue: 'dev-direct-rtmp-token',
+        phone: phone.trim() || '13800000000',
+        authMode: 'DIRECT_RTMP',
+      });
+      return;
+    }
+
     if (!phone.trim()) {
       setErrorMessage('请输入注册手机号');
       return;
@@ -56,7 +104,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       return;
     }
     if (needCardKey && !cardKey.trim()) {
-      setErrorMessage('新设备激活必须提供设备卡密 (格式: PDK-...)');
+      setErrorMessage('新设备接入必须提供工作站席位授权码 (格式: PDK-...)');
       return;
     }
 
@@ -68,16 +116,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       if (err instanceof PdkClientError) {
         if (err.code === 40380) {
           setNeedCardKey(true);
-          setErrorMessage('【新设备首次激活】请输入分配给本账号的设备卡密以绑定席位');
+          setErrorMessage('【新设备首次接入】请输入分配给本账号的席位授权码以绑定工作站');
         } else if (err.code === 40383) {
-          setErrorMessage('【卡密已被占用】该卡密已绑定其他设备，请先在原设备解绑');
+          setErrorMessage('【席位已被占用】该授权码已绑定其他终端，请先在原设备释放');
         } else if (err.code === 40381) {
-          setErrorMessage('【许可证已到期】当前设备许可证已到期，请续费后登录');
+          setErrorMessage('【工作站席位已到期】当前席位授权已到期，请联系管理员');
         } else {
           setErrorMessage(err.message || '登录失败，请核对信息');
         }
       } else {
-        setErrorMessage(err?.message || '网络连接异常，请检查环境');
+        setErrorMessage(err?.message || '网络连接异常，请检查网络设置');
       }
     } finally {
       setIsLoading(false);
@@ -90,47 +138,25 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-        {/* 顶部环境切换胶囊 */}
-        <View style={styles.topBar}>
+        {/* 品牌标识与标题 (连续点击 Logo 6 次触发高级网络设置) */}
+        <View style={styles.brandHeader}>
           <TouchableOpacity
-            style={[
-              styles.envPill,
-              env === PdkEnv.PRODUCTION ? styles.envProd : styles.envLocal,
-            ]}
-            onPress={handleToggleEnv}
+            activeOpacity={0.8}
+            onPress={handleLogoPress}
+            style={styles.logoTouchArea}
           >
-            <Text style={styles.envPillText}>
-              {env === PdkEnv.PRODUCTION
-                ? '🚀 生产环境 (pdk.graddu.com)'
-                : `🛠️ 本地调试 (${localHost.trim() || '192.168.3.148:8080'})`}
-            </Text>
+            <View style={styles.logoCircle}>
+              <ZliveLogo size={76} />
+            </View>
           </TouchableOpacity>
 
-          {env === PdkEnv.LOCAL_DEBUG && (
-            <View style={styles.debugHostBox}>
-              <Text style={styles.debugHostLabel}>调试机 IP:端口 (开发PC局域网地址)</Text>
-              <TextInput
-                style={styles.debugHostInput}
-                value={localHost}
-                onChangeText={(text) => {
-                  setLocalHost(text);
-                  pdkClient.setBaseUrl(`http://${text.trim()}`);
-                }}
-                placeholder="192.168.3.148:8080"
-                placeholderTextColor={Colors.textMuted}
-                autoCapitalize="none"
-                keyboardType="url"
-              />
+          {devHint ? (
+            <View style={styles.devHintBadge}>
+              <Text style={styles.devHintText}>🛠️ {devHint}</Text>
             </View>
-          )}
-        </View>
+          ) : null}
 
-        {/* 品牌标识与标题 */}
-        <View style={styles.brandHeader}>
-          <View style={styles.logoCircle}>
-            <Text style={styles.logoIcon}>📡</Text>
-          </View>
-          <Text style={styles.title}>智播云控 · 移动端</Text>
+          <Text style={styles.title}>Zlive · 智播云控</Text>
           <Text style={styles.subtitle}>跨平台高清音视频推流与设备许可证中心</Text>
         </View>
 
@@ -171,12 +197,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
             />
           </View>
 
-          {/* 新设备激活卡密输入区 (40380 自动激活触发) */}
+          {/* 新设备首次接入席位授权码输入区 (40380 自动触发) */}
           {needCardKey && (
             <View style={[styles.inputGroup, styles.cardKeyHighlight]}>
               <View style={styles.cardKeyHeaderRow}>
-                <Text style={styles.cardKeyLabel}>设备卡密 (席位绑定)</Text>
-                <Text style={styles.badgeNewDevice}>新设备</Text>
+                <Text style={styles.cardKeyLabel}>工作站席位授权码 (接入绑定)</Text>
+                <Text style={styles.badgeNewDevice}>新工作站</Text>
               </View>
               <TextInput
                 style={[styles.textInput, styles.cardKeyInput]}
@@ -191,11 +217,44 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
           {/* 设备指纹唯一标识 */}
           <View style={styles.deviceRow}>
-            <Text style={styles.deviceLabel}>本设备标识:</Text>
+            <Text style={styles.deviceLabel}>工作站标识:</Text>
             <Text style={styles.deviceValue}>{deviceId}</Text>
           </View>
 
-          {/* 登录/激活提交主按钮 */}
+          {/* 隐私政策与服务协议勾选合规区 */}
+          <View style={styles.agreementRow}>
+            <TouchableOpacity
+              style={styles.checkboxTouch}
+              onPress={() => setAgreedToTerms(!agreedToTerms)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.checkbox, agreedToTerms && styles.checkboxChecked]}>
+                {agreedToTerms && <Text style={styles.checkboxCheckmark}>✓</Text>}
+              </View>
+            </TouchableOpacity>
+            <View style={styles.agreementTextWrapper}>
+              <Text style={styles.agreementLabel}>我已阅读并同意</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setAgreementType('TERMS');
+                  setAgreementModalVisible(true);
+                }}
+              >
+                <Text style={styles.agreementLink}>《用户服务协议》</Text>
+              </TouchableOpacity>
+              <Text style={styles.agreementLabel}>与</Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setAgreementType('PRIVACY');
+                  setAgreementModalVisible(true);
+                }}
+              >
+                <Text style={styles.agreementLink}>《隐私保护政策》</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* 登录/接入提交主按钮 */}
           <TouchableOpacity
             style={[styles.submitBtn, isLoading && styles.submitBtnDisabled]}
             onPress={handleLogin}
@@ -206,12 +265,38 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               <ActivityIndicator color="#FFFFFF" />
             ) : (
               <Text style={styles.submitBtnText}>
-                {needCardKey ? '立即激活并进入直播室' : '登 录 / 进 入'}
+                {needCardKey ? '绑定授权并进入工作台' : '登 录 / 进 入'}
               </Text>
             )}
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      {/* 高级网络与流媒体设置弹窗 */}
+      <DevModeModal
+        visible={devModalVisible}
+        onClose={() => setDevModalVisible(false)}
+        onDirectEnter={() => {
+          setDevModalVisible(false);
+          onLoginSuccess({
+            tokenName: 'satoken',
+            tokenValue: 'dev-direct-rtmp-token',
+            phone: phone.trim() || '13800000000',
+            authMode: 'DIRECT_RTMP',
+          });
+        }}
+      />
+
+      {/* 用户协议与隐私保护政策富文本展示弹窗 */}
+      <AgreementModal
+        visible={agreementModalVisible}
+        type={agreementType}
+        onClose={() => setAgreementModalVisible(false)}
+        onAccept={() => {
+          setAgreedToTerms(true);
+          setAgreementModalVisible(false);
+        }}
+      />
     </KeyboardAvoidingView>
   );
 };
@@ -227,80 +312,50 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.lg,
     paddingVertical: Spacing.xl,
   },
-  topBar: {
-    alignItems: 'center',
-    marginBottom: Spacing.md,
-  },
-  envPill: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: Radius.full,
-    borderWidth: 1,
-  },
-  envProd: {
-    backgroundColor: 'rgba(16, 185, 129, 0.15)',
-    borderColor: Colors.onlineGreen,
-  },
-  envLocal: {
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    borderColor: Colors.warningYellow,
-  },
-  envPillText: {
-    ...Typography.mono,
-    fontSize: 11,
-    color: Colors.textPrimary,
-  },
-  debugHostBox: {
-    marginTop: Spacing.sm,
-    width: '100%',
-    maxWidth: 320,
-    backgroundColor: Colors.surfaceSubtle,
-    borderRadius: Radius.md,
-    borderWidth: 1,
-    borderColor: Colors.borderSubtle,
-    padding: Spacing.sm,
-    alignItems: 'center',
-  },
-  debugHostLabel: {
-    color: Colors.warningYellow,
-    fontSize: 10,
-    marginBottom: 4,
-  },
-  debugHostInput: {
-    backgroundColor: Colors.surface,
-    color: Colors.textPrimary,
-    ...Typography.mono,
-    fontSize: 12,
-    height: 34,
-    borderRadius: Radius.sm,
-    borderWidth: 1,
-    borderColor: Colors.borderSubtle,
-    paddingHorizontal: 10,
-    width: '100%',
-    textAlign: 'center',
-  },
   brandHeader: {
     alignItems: 'center',
     marginBottom: Spacing.xl,
   },
+  logoTouchArea: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   logoCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: 'rgba(6, 182, 212, 0.15)',
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
+    width: 80,
+    height: 80,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: Spacing.md,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 12,
+    elevation: 6,
   },
-  logoIcon: {
-    fontSize: 28,
+  devHintBadge: {
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderWidth: 1,
+    borderColor: Colors.warningYellow,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: Radius.full,
+    marginBottom: Spacing.sm,
+  },
+  devHintText: {
+    ...Typography.bodySmall,
+    fontSize: 11,
+    color: Colors.warningYellow,
+    fontWeight: '600',
   },
   title: {
     ...Typography.h1,
     color: Colors.textPrimary,
     marginBottom: 6,
+    letterSpacing: 0.5,
   },
   subtitle: {
     ...Typography.bodySmall,
@@ -398,6 +453,53 @@ const styles = StyleSheet.create({
     ...Typography.mono,
     fontSize: 11,
     color: Colors.textSecondary,
+  },
+  agreementRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: Spacing.sm,
+    marginBottom: 4,
+  },
+  checkboxTouch: {
+    padding: 4,
+    marginRight: 4,
+  },
+  checkbox: {
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: Colors.borderSubtle,
+    backgroundColor: Colors.surfaceSubtle,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkboxChecked: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  checkboxCheckmark: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '900',
+    lineHeight: 12,
+  },
+  agreementTextWrapper: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    flex: 1,
+  },
+  agreementLabel: {
+    ...Typography.caption,
+    color: Colors.textSecondary,
+    fontSize: 11,
+  },
+  agreementLink: {
+    ...Typography.caption,
+    color: Colors.primary,
+    fontSize: 11,
+    fontWeight: '600',
   },
   submitBtn: {
     backgroundColor: Colors.primary,

@@ -1,6 +1,15 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { StyleSheet, View, Alert, StatusBar, Platform, PermissionsAndroid } from 'react-native';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  StyleSheet,
+  View,
+  Alert,
+  StatusBar,
+  Platform,
+  PermissionsAndroid,
+  Animated,
+} from 'react-native';
 import { Colors } from '../theme/colors';
+import { Spacing } from '../theme/typography';
 import { CameraViewfinder } from '../components/CameraViewfinder';
 import { LiveOverlayHud } from '../components/LiveOverlayHud';
 import { StreamControlBar } from '../components/StreamControlBar';
@@ -9,6 +18,7 @@ import { VideoAudioSettings, LoginResult, PdkEnv } from '../api/types';
 import { liveService } from '../services/liveService';
 import { rtmpEngine, StreamStats } from '../services/rtmpEngine';
 import { pdkClient } from '../api/pdkClient';
+import { devSettingsService } from '../services/devSettingsService';
 
 interface LiveScreenProps {
   loginResult: LoginResult;
@@ -17,7 +27,7 @@ interface LiveScreenProps {
 
 /**
  * 直播主控室全景页面 (Live Broadcast Studio)
- * 整合全屏高清摄像头硬件预览、MediaCodec 编解码、RTMP 原生推流与顶部流状态 HUD
+ * 整合全屏高清摄像头硬件预览、MediaCodec 编解码、RTMP 原生推流、自动隐藏控制台与开发者直推
  */
 export const LiveScreen: React.FC<LiveScreenProps> = ({
   loginResult,
@@ -27,6 +37,17 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
   const [isLoading, setIsLoading] = useState(false);
   const [settingsSheetVisible, setSettingsSheetVisible] = useState(false);
   const [currentEnv, setCurrentEnv] = useState<PdkEnv>(pdkClient.getEnvironment());
+
+  // 视频画面隐私开关 (替换原有补光灯，支持画面黑屏暂停推流)
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+
+  // 控制栏 10 秒无操作自动隐藏状态与动画
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const hideTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const controlsOpacity = useRef(new Animated.Value(1)).current;
+
+  // 高级专网模式：是否处于自定义直推 RTMP 模式
+  const isDirectRtmpRef = useRef(false);
 
   // 音视频参数配置状态
   const [videoSettings, setVideoSettings] = useState<VideoAudioSettings>({
@@ -49,6 +70,54 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     durationSeconds: 0,
     netQuality: 'DISCONNECTED',
   });
+
+  // 重置并启动 10 秒自动隐藏倒计时
+  const resetHideTimer = useCallback(() => {
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+    }
+    setControlsVisible(true);
+    Animated.timing(controlsOpacity, {
+      toValue: 1,
+      duration: 200,
+      useNativeDriver: true,
+    }).start();
+
+    // 10秒无操作后自动平滑淡出隐藏
+    hideTimerRef.current = setTimeout(() => {
+      setControlsVisible(false);
+      Animated.timing(controlsOpacity, {
+        toValue: 0,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    }, 10000);
+  }, [controlsOpacity]);
+
+  // 设置抽屉打开时保持控制可见，关闭后重新开始 10s 倒计时
+  useEffect(() => {
+    if (settingsSheetVisible) {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      setControlsVisible(true);
+      controlsOpacity.setValue(1);
+    } else {
+      resetHideTimer();
+    }
+  }, [settingsSheetVisible, resetHideTimer, controlsOpacity]);
+
+  // 页面卸载时清理定时器
+  useEffect(() => {
+    return () => {
+      if (hideTimerRef.current) {
+        clearTimeout(hideTimerRef.current);
+      }
+    };
+  }, []);
+
+  // 点击屏幕视频画面：若已隐藏则唤醒显示控制栏，若已显示则刷新 10 秒倒计时
+  const handleScreenPress = useCallback(() => {
+    resetHideTimer();
+  }, [resetHideTimer]);
 
   // 请求系统摄像头与音频权限，并在授权后自动开启底层硬件取景预览
   useEffect(() => {
@@ -93,7 +162,12 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     });
 
     const unsubState = rtmpEngine.subscribeState((state, error) => {
-      if (state === 'FAILED') {
+      if (state === 'CONNECTED') {
+        setIsStreaming(true);
+      } else if (state === 'DISCONNECTED') {
+        setIsStreaming(false);
+      } else if (state === 'FAILED') {
+        setIsStreaming(false);
         Alert.alert('推流失败', error || '流媒体服务器连接失败，请检查 RTMP 地址或网络');
       }
     });
@@ -120,7 +194,6 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     setVideoSettings((prev) => ({
       ...prev,
       isFrontCamera: !prev.isFrontCamera,
-      isTorchOn: false,
     }));
   }, []);
 
@@ -134,18 +207,14 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     }));
   }, [videoSettings.isMuted]);
 
-  // 3. 闪光补光灯开关 (仅后摄支持)
-  const handleToggleTorch = useCallback(async () => {
-    const nextTorch = !videoSettings.isTorchOn;
-    await rtmpEngine.toggleTorch(nextTorch);
-    setVideoSettings((prev) => ({
-      ...prev,
-      isTorchOn: nextTorch,
-    }));
-  }, [videoSettings.isTorchOn]);
+  // 3. 画面暂停 / 恢复开关 (隐私黑屏遮蔽，麦克风继续传输)
+  const handleToggleVideo = useCallback(() => {
+    setIsVideoEnabled((prev) => !prev);
+  }, []);
 
-  // 4. 开始 / 结束推流主动作
+  // 4. 开始 / 结束推流主动作 (支持开发者自定义 RTMP 直推旁路)
   const handleToggleStream = async () => {
+    resetHideTimer();
     if (isStreaming) {
       Alert.alert('结束直播', '确定要停止当前直播推流吗？', [
         { text: '取消', style: 'cancel' },
@@ -156,9 +225,18 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
             setIsLoading(true);
             try {
               await rtmpEngine.stopPublish();
-              await liveService.stopLive();
+              if (!isDirectRtmpRef.current) {
+                try {
+                  await liveService.stopLive();
+                } catch (e) {
+                  console.warn('[LiveScreen] stopLive error:', e);
+                }
+              } else {
+                setIsStreaming(false);
+              }
             } finally {
               setIsLoading(false);
+              isDirectRtmpRef.current = false;
             }
           },
         },
@@ -166,10 +244,24 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     } else {
       setIsLoading(true);
       try {
-        const ticket = await liveService.startLive('智播移动端开播');
-        await rtmpEngine.startPublish(ticket.publishUrl, videoSettings);
+        const isDirect = devSettingsService.isDirectRtmp();
+        const customRtmp = devSettingsService.getCustomRtmpUrl();
+
+        if (isDirect && customRtmp) {
+          // 专网直推模式：直接推流到用户指定的 RTMP 服务器，无需请求业务后端
+          console.log('[LiveScreen] 专网直推模式已启用自定义 RTMP 地址:', customRtmp);
+          isDirectRtmpRef.current = true;
+          await rtmpEngine.startPublish(customRtmp, videoSettings);
+          setIsStreaming(true);
+        } else {
+          // 生产/标准模式：向业务后端请求推流票据与 RTMP 上行地址
+          isDirectRtmpRef.current = false;
+          const ticket = await liveService.startLive('智播移动端开播');
+          await rtmpEngine.startPublish(ticket.publishUrl, videoSettings);
+        }
       } catch (err: any) {
-        Alert.alert('开播失败', err?.message || '无法建立推流通道，请重试');
+        isDirectRtmpRef.current = false;
+        Alert.alert('开播失败', err?.message || '无法建立推流通道，请检查网络或 RTMP 地址');
       } finally {
         setIsLoading(false);
       }
@@ -206,12 +298,13 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     <View style={styles.container}>
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
-      {/* 1. 全景高清摄像头取景框 */}
+      {/* 1. 全景高清摄像头取景框 (支持轻触屏幕唤醒控制栏、画面黑屏遮蔽) */}
       <CameraViewfinder
         isFrontCamera={videoSettings.isFrontCamera}
         isMuted={videoSettings.isMuted}
-        isTorchOn={videoSettings.isTorchOn}
+        isVideoEnabled={isVideoEnabled}
         resolutionLabel={videoSettings.resolution.label}
+        onScreenPress={handleScreenPress}
       />
 
       {/* 2. 顶部悬浮流状态看板 HUD */}
@@ -220,22 +313,34 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
         stats={streamStats}
         resolutionLabel={videoSettings.resolution.label}
         maskedPhone={maskedPhone}
-        onProfilePress={onNavigateProfile}
+        onProfilePress={() => {
+          resetHideTimer();
+          onNavigateProfile();
+        }}
       />
 
-      {/* 3. 底部悬浮控制台 (翻转、静音、补光、参数、主开关) */}
-      <StreamControlBar
-        isStreaming={isStreaming}
-        isLoading={isLoading}
-        isFrontCamera={videoSettings.isFrontCamera}
-        isMuted={videoSettings.isMuted}
-        isTorchOn={videoSettings.isTorchOn}
-        onFlipCamera={handleFlipCamera}
-        onToggleMute={handleToggleMute}
-        onToggleTorch={handleToggleTorch}
-        onOpenSettings={() => setSettingsSheetVisible(true)}
-        onToggleStream={handleToggleStream}
-      />
+      {/* 3. 底部悬浮控制台 (支持 10 秒无操作自动平滑淡出隐藏) */}
+      <Animated.View
+        style={[styles.controlBarWrapper, { opacity: controlsOpacity }]}
+        pointerEvents={controlsVisible ? 'auto' : 'none'}
+      >
+        <StreamControlBar
+          isStreaming={isStreaming}
+          isLoading={isLoading}
+          isFrontCamera={videoSettings.isFrontCamera}
+          isMuted={videoSettings.isMuted}
+          isVideoEnabled={isVideoEnabled}
+          onFlipCamera={handleFlipCamera}
+          onToggleMute={handleToggleMute}
+          onToggleVideo={handleToggleVideo}
+          onOpenSettings={() => {
+            resetHideTimer();
+            setSettingsSheetVisible(true);
+          }}
+          onToggleStream={handleToggleStream}
+          onUserInteraction={resetHideTimer}
+        />
+      </Animated.View>
 
       {/* 4. 底部毛玻璃画质设置抽屉 */}
       <SettingsSheet
@@ -254,5 +359,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.background,
+  },
+  controlBarWrapper: {
+    position: 'absolute',
+    bottom: 36,
+    left: Spacing.md,
+    right: Spacing.md,
+    zIndex: 20,
   },
 });

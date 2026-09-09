@@ -14,38 +14,45 @@ interface StreamControlBarProps {
   isLoading: boolean;
   isFrontCamera: boolean;
   isMuted: boolean;
-  isTorchOn: boolean;
+  isVideoEnabled: boolean;
   onFlipCamera: () => void;
   onToggleMute: () => void;
-  onToggleTorch: () => void;
+  onToggleVideo: () => void;
   onOpenSettings: () => void;
   onToggleStream: () => void;
+  onUserInteraction?: () => void;
 }
 
 /**
  * 现代化底部浮动音视频控制栏
- * 整合镜头翻转、麦克风静音、闪光补光、参数抽屉与开播主控制
+ * 整合镜头翻转、麦克风静音、画面开关、参数抽屉与开播主控制
  */
 export const StreamControlBar: React.FC<StreamControlBarProps> = ({
   isStreaming,
   isLoading,
   isFrontCamera,
   isMuted,
-  isTorchOn,
+  isVideoEnabled,
   onFlipCamera,
   onToggleMute,
-  onToggleTorch,
+  onToggleVideo,
   onOpenSettings,
   onToggleStream,
+  onUserInteraction,
 }) => {
+  const handlePress = (callback: () => void) => {
+    onUserInteraction?.();
+    callback();
+  };
+
   return (
     <View style={styles.container}>
-      {/* 上层：快捷功能圆形按钮栏 (镜头翻转、静音、补光、参数) */}
+      {/* 上层：快捷功能圆形按钮栏 (镜头翻转、静音、画面开关、参数) */}
       <View style={styles.toolRow}>
         {/* 1. 镜头翻转 */}
         <TouchableOpacity
           style={styles.circleBtn}
-          onPress={onFlipCamera}
+          onPress={() => handlePress(onFlipCamera)}
           activeOpacity={0.7}
         >
           <Text style={styles.btnIcon}>🔄</Text>
@@ -55,7 +62,7 @@ export const StreamControlBar: React.FC<StreamControlBarProps> = ({
         {/* 2. 麦克风静音切换 */}
         <TouchableOpacity
           style={[styles.circleBtn, isMuted && styles.circleBtnActiveRed]}
-          onPress={onToggleMute}
+          onPress={() => handlePress(onToggleMute)}
           activeOpacity={0.7}
         >
           <Text style={styles.btnIcon}>{isMuted ? '🔇' : '🎙️'}</Text>
@@ -64,33 +71,30 @@ export const StreamControlBar: React.FC<StreamControlBarProps> = ({
           </Text>
         </TouchableOpacity>
 
-        {/* 3. 闪光补光灯 (前置摄像头时禁用) */}
+        {/* 3. 画面开 / 关 (隐私黑屏遮蔽) */}
         <TouchableOpacity
           style={[
             styles.circleBtn,
-            isTorchOn && !isFrontCamera && styles.circleBtnActiveYellow,
-            isFrontCamera && styles.circleBtnDisabled,
+            !isVideoEnabled && styles.circleBtnActiveRed,
           ]}
-          onPress={onToggleTorch}
-          disabled={isFrontCamera}
+          onPress={() => handlePress(onToggleVideo)}
           activeOpacity={0.7}
         >
-          <Text style={styles.btnIcon}>{isTorchOn ? '⚡' : '💡'}</Text>
+          <Text style={styles.btnIcon}>{isVideoEnabled ? '📹' : '🚫'}</Text>
           <Text
             style={[
               styles.btnLabel,
-              isTorchOn && !isFrontCamera && styles.btnLabelActiveYellow,
-              isFrontCamera && styles.btnLabelDisabled,
+              !isVideoEnabled && styles.btnLabelActiveRed,
             ]}
           >
-            {isTorchOn ? '补光开' : '补光灯'}
+            {isVideoEnabled ? '画面开' : '画面关'}
           </Text>
         </TouchableOpacity>
 
         {/* 4. 参数设置面板 */}
         <TouchableOpacity
           style={styles.circleBtn}
-          onPress={onOpenSettings}
+          onPress={() => handlePress(onOpenSettings)}
           activeOpacity={0.7}
         >
           <Text style={styles.btnIcon}>⚙️</Text>
@@ -105,7 +109,7 @@ export const StreamControlBar: React.FC<StreamControlBarProps> = ({
           isStreaming ? styles.mainBtnLive : styles.mainBtnStart,
           isLoading && styles.mainBtnLoading,
         ]}
-        onPress={onToggleStream}
+        onPress={() => handlePress(onToggleStream)}
         disabled={isLoading}
         activeOpacity={0.85}
       >
@@ -134,12 +138,9 @@ export const StreamControlBar: React.FC<StreamControlBarProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute',
-    bottom: 36,
-    left: Spacing.md,
-    right: Spacing.md,
     alignItems: 'center',
     gap: 16,
+    width: '100%',
   },
   toolRow: {
     flexDirection: 'row',

@@ -47,6 +47,23 @@ RCT_EXPORT_METHOD(setCustomDeviceId:(NSString *)customId) {
     }
 }
 
+RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(getDevConfigSync) {
+    NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:@"persisted_dev_config"];
+    return val ?: @"";
+}
+
+RCT_EXPORT_METHOD(getDevConfig:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+    NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:@"persisted_dev_config"];
+    resolve(val ?: @"");
+}
+
+RCT_EXPORT_METHOD(saveDevConfig:(NSString *)configJson) {
+    if (configJson) {
+        [[NSUserDefaults standardUserDefaults] setObject:configJson forKey:@"persisted_dev_config"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+}
+
 + (NSString *)getStableDeviceId {
     static NSString *cachedId = nil;
     static dispatch_once_t onceToken;
