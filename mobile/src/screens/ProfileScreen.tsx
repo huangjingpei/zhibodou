@@ -43,9 +43,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
   const [agreementModalVisible, setAgreementModalVisible] = useState(false);
   const [agreementType, setAgreementType] = useState<AgreementType>('TERMS');
 
-  const deviceId = deviceService.getDeviceId();
+  const [deviceId, setDeviceId] = useState<string>(deviceService.getDeviceId());
 
   useEffect(() => {
+    deviceService.getDeviceIdAsync().then((id) => {
+      if (id) setDeviceId(id);
+    });
     loadData();
   }, []);
 

@@ -347,6 +347,7 @@ export class PdkClient {
       }
     }
 
+    await deviceService.ensureDeviceId();
     const reqHeaders = this.buildHeaders(authenticated, headers);
     const fetchOptions: RequestInit = {
       method,
@@ -481,7 +482,7 @@ export class PdkClient {
     const targetPhone = phone.trim();
     this.phone = targetPhone;
 
-    const deviceId = deviceService.getDeviceId();
+    const deviceId = await deviceService.ensureDeviceId();
     const payload: Record<string, any> = {
       appId: this.config.appId,
       phone: targetPhone,

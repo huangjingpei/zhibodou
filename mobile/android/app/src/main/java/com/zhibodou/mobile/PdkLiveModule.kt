@@ -115,8 +115,13 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
                     val targetFps = if (fps > 0) fps else 30
                     val rotation = CameraHelper.getCameraOrientation(reactContext)
 
+                    // RootEncoder 约定：输入必须为相机横向基准尺寸 (宽 >= 高，如 1920x1080)
+                    // 竖屏模式 (rotation=90/270) 下底层会自动旋转为 1080x1920 竖屏
+                    val camW = maxOf(targetW, targetH)
+                    val camH = minOf(targetW, targetH)
+
                     if (!camera.isOnPreview) {
-                        camera.startPreview(facing, targetW, targetH, targetFps, rotation)
+                        camera.startPreview(facing, camW, camH, targetFps, rotation)
                     }
                     promise.resolve(true)
                 } catch (e: Exception) {
@@ -175,14 +180,19 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
                 val targetSampleRate = if (sampleRate > 0) sampleRate else 48000
                 val rotation = CameraHelper.getCameraOrientation(reactContext)
 
-                Log.i(TAG, "startPublish: ${targetW}x${targetH} @ ${targetFps}fps, videoBitrate=$targetBitrate bps (${currentBitrateKbps} kbps), audioBitrate=$targetAudioBitrate bps")
+                // RootEncoder 约定：输入必须为相机横向基准尺寸 (宽 >= 高，如 1920x1080)
+                // 竖屏模式 (rotation=90/270) 下底层会自动旋转为 1080x1920 竖屏输出推流与编码
+                val camW = maxOf(targetW, targetH)
+                val camH = minOf(targetW, targetH)
+
+                Log.i(TAG, "startPublish: nativeCameraSize=${camW}x${camH}, rotation=$rotation, outputStream=${if (rotation == 90 || rotation == 270) "${camH}x${camW}" else "${camW}x${camH}"} @ ${targetFps}fps, videoBitrate=$targetBitrate bps (${currentBitrateKbps} kbps), audioBitrate=$targetAudioBitrate bps")
 
                 // 1. 初始化视频 MediaCodec 硬件加速编码器 (H.264 / AVC Surface 输入模式)
-                val videoOk = camera.prepareVideo(targetW, targetH, targetFps, targetBitrate, 2, rotation)
+                val videoOk = camera.prepareVideo(camW, camH, targetFps, targetBitrate, 2, rotation)
                 if (!videoOk) {
                     if (!camera.isOnPreview) {
                         val facing = if (isFrontFacing) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
-                        camera.startPreview(facing, targetW, targetH, targetFps, rotation)
+                        camera.startPreview(facing, camW, camH, targetFps, rotation)
                     }
                     promise.reject("CODEC_VIDEO_ERR", "无法初始化 MediaCodec H.264 视频硬编码器，请检查分辨率与参数")
                     return@post
@@ -193,7 +203,7 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
                 if (!audioOk) {
                     if (!camera.isOnPreview) {
                         val facing = if (isFrontFacing) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
-                        camera.startPreview(facing, targetW, targetH, targetFps, rotation)
+                        camera.startPreview(facing, camW, camH, targetFps, rotation)
                     }
                     promise.reject("CODEC_AUDIO_ERR", "无法初始化 MediaCodec AAC 音频硬编码器")
                     return@post
@@ -212,7 +222,7 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
                     if (camera != null && !camera.isOnPreview && !camera.isStreaming) {
                         val facing = if (isFrontFacing) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
                         val rotation = CameraHelper.getCameraOrientation(reactContext)
-                        camera.startPreview(facing, 1080, 1920, 30, rotation)
+                        camera.startPreview(facing, 1920, 1080, 30, rotation)
                     }
                 } catch (_: Exception) {}
                 promise.reject("PUBLISH_ERROR", e.message, e)
@@ -241,7 +251,7 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
                         if (cam != null && view != null && !cam.isStreaming && !cam.isOnPreview) {
                             val facing = if (isFrontFacing) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
                             val rotation = CameraHelper.getCameraOrientation(reactContext)
-                            cam.startPreview(facing, 1080, 1920, 30, rotation)
+                            cam.startPreview(facing, 1920, 1080, 30, rotation)
                             Log.i(TAG, "推流结束，本地高清全屏取景画面已平滑恢复")
                         }
                     } catch (e: Exception) {

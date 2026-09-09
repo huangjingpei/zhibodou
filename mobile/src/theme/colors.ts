@@ -30,6 +30,7 @@ export const Colors = {
   // 文本系统
   textPrimary: '#F9FAFB',      // 一级主标题/重要数字
   textSecondary: '#9CA3AF',    // 二级说明/辅助信息
+  textTertiary: '#4B5563',     // 三级辅助说明/次要标注
   textMuted: '#6B7280',        // 占位符/失活标签
   textInverse: '#111827',
 

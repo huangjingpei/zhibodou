@@ -74,21 +74,24 @@ RCT_EXPORT_METHOD(saveDevConfig:(NSString *)configJson) {
             return;
         }
 
+        // 1. 获取供应商稳定 UUID (IDFV)
         NSString *idfv = [[[UIDevice currentDevice] identifierForVendor] UUIDString] ?: @"";
         NSString *model = [[UIDevice currentDevice] model] ?: @"iPhone";
-        NSString *sysVer = [[UIDevice currentDevice] systemVersion] ?: @"14.0";
-        NSString *rawSource = [NSString stringWithFormat:@"IOS:%@:%@:%@", idfv, model, sysVer];
+        
+        // 2. 派生源不包含易变的 systemVersion，避免系统升级导致指纹漂移
+        NSString *rawSource = [NSString stringWithFormat:@"IOS:%@:%@", idfv, model];
 
         const char *cStr = [rawSource UTF8String];
         unsigned char result[CC_SHA256_DIGEST_LENGTH];
         CC_SHA256(cStr, (CC_LONG)strlen(cStr), result);
 
-        NSMutableString *hexString = [NSMutableString stringWithCapacity:12];
-        for (int i = 0; i < 6; i++) { // 12 hex chars (6 bytes)
+        NSMutableString *hexString = [NSMutableString stringWithCapacity:24];
+        for (int i = 0; i < 12; i++) { // 24 hex chars (12 bytes)
             [hexString appendFormat:@"%02X", result[i]];
         }
 
         cachedId = [NSString stringWithFormat:@"MOB-IOS-%@", hexString];
+        // 3. 固化写入 Keychain (卸载重装不丢失)
         [PdkKeychainHelper saveString:cachedId forKey:kPdkDeviceIdAccount service:kPdkServiceKey];
     });
     return cachedId;

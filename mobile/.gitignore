@@ -22,3 +22,7 @@ android/local.properties
 
 # ---- 开发验证截图（不入库） ----
 screen_*.png
+
+# ---- 签名打包输出（不入库） ----
+android/app/release/
+android/app/build/

@@ -48,6 +48,12 @@ export const Typography = {
     fontWeight: '700',
     letterSpacing: 0.5,
   } as TextStyle,
+
+  caption: {
+    fontSize: 12,
+    fontWeight: '400',
+    lineHeight: 16,
+  } as TextStyle,
 };
 
 export const Spacing = {
@@ -63,5 +69,6 @@ export const Radius = {
   sm: 6,
   md: 12,
   lg: 18,
+  xl: 24,
   full: 999,
 };
