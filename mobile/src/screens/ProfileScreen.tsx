@@ -168,11 +168,14 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
     <View style={styles.container}>
       {/* 顶部导航栏 */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={onBack} style={styles.backBtn}>
-          <Text style={styles.backBtnText}>‹ 返回直播室</Text>
+        <TouchableOpacity onPress={onBack} style={styles.backBtn} activeOpacity={0.7}>
+          <View style={styles.backBtnIconWrapper}>
+            <View style={styles.backChevron} />
+          </View>
+          <Text style={styles.backBtnText}>返回直播室</Text>
         </TouchableOpacity>
         <Text style={styles.headerTitle}>工作台与席位管理</Text>
-        <View style={{ width: 60 }} />
+        <View style={styles.headerSpacer} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -413,13 +416,39 @@ const styles = StyleSheet.create({
     borderBottomColor: Colors.borderSubtle,
   },
   backBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
     paddingVertical: 6,
-    paddingHorizontal: 8,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: Radius.full,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.1)',
+  },
+  backBtnIconWrapper: {
+    width: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 5,
+  },
+  backChevron: {
+    width: 7,
+    height: 7,
+    borderLeftWidth: 2,
+    borderBottomWidth: 2,
+    borderColor: Colors.primary,
+    transform: [{ rotate: '45deg' }],
+    marginLeft: 2,
   },
   backBtnText: {
-    ...Typography.body,
-    color: Colors.primary,
+    ...Typography.bodySmall,
+    color: Colors.textPrimary,
     fontWeight: '600',
+    fontSize: 13,
+  },
+  headerSpacer: {
+    width: 90,
   },
   headerTitle: {
     ...Typography.h3,

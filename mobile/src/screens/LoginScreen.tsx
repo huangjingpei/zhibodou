@@ -27,6 +27,61 @@ interface LoginScreenProps {
 }
 
 /**
+ * 现代极简几何矢量眼睛图标 (密码显隐切换，替代卡通猴子 Emoji)
+ */
+const EyeToggleIcon: React.FC<{ visible: boolean; size?: number; color?: string }> = ({
+  visible,
+  size = 20,
+  color = Colors.textSecondary,
+}) => {
+  const w = size;
+  const h = size * 0.62;
+  const pupilSize = size * 0.3;
+
+  return (
+    <View style={{ width: size + 4, height: size + 4, justifyContent: 'center', alignItems: 'center' }}>
+      {/* 眼睛外部椭圆轮廓 */}
+      <View
+        style={{
+          width: w,
+          height: h,
+          borderRadius: w / 2,
+          borderWidth: 1.6,
+          borderColor: visible ? Colors.primary : color,
+          justifyContent: 'center',
+          alignItems: 'center',
+          backgroundColor: 'transparent',
+        }}
+      >
+        {/* 中心瞳孔 */}
+        <View
+          style={{
+            width: pupilSize,
+            height: pupilSize,
+            borderRadius: pupilSize / 2,
+            backgroundColor: visible ? Colors.primary : color,
+          }}
+        />
+      </View>
+
+      {/* 隐藏密码状态：极简干练的斜杠划线 */}
+      {!visible && (
+        <View
+          style={{
+            position: 'absolute',
+            width: size * 1.25,
+            height: 1.8,
+            backgroundColor: color,
+            transform: [{ rotate: '-45deg' }],
+            borderRadius: 1,
+          }}
+        />
+      )}
+    </View>
+  );
+};
+
+/**
  * 现代暗色风格登录与工作站席位授权接入页面
  * 集成 Zlive 多彩品牌图标与合规协议验证
  * 支持连续点击 Logo 6 次呼出高级网络与流媒体设置
@@ -261,7 +316,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
                 onPress={() => setShowPassword(!showPassword)}
                 activeOpacity={0.7}
               >
-                <Text style={styles.eyeBtnText}>{showPassword ? '👁️' : '🙈'}</Text>
+                <EyeToggleIcon visible={showPassword} color={Colors.textMuted} />
               </TouchableOpacity>
             </View>
           </View>
@@ -499,14 +554,11 @@ const styles = StyleSheet.create({
   },
   eyeBtn: {
     position: 'absolute',
-    right: 12,
+    right: 8,
+    width: 44,
     height: 48,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 4,
-  },
-  eyeBtnText: {
-    fontSize: 18,
   },
   cardKeyHighlight: {
     backgroundColor: 'rgba(245, 158, 11, 0.08)',
