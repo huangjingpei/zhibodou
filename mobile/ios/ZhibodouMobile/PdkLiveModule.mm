@@ -24,6 +24,7 @@
     uint32_t _lastBitrateBps;
     int _streamDurationSeconds;
     int _targetFps;
+    BOOL _wasPreviewingBeforeBackground;
 
     dispatch_source_t _statsTimer;
 }
@@ -57,8 +58,18 @@ RCT_EXPORT_MODULE(PdkLiveModule);
         _lastBitrateBps = 0;
         _streamDurationSeconds = 0;
         _targetFps = 30;
+        _wasPreviewingBeforeBackground = NO;
 
         [PdkLiveManager sharedInstance].currentLiveModule = self;
+
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleAppDidEnterBackground:)
+                                                     name:UIApplicationDidEnterBackgroundNotification
+                                                   object:nil];
+        [[NSNotificationCenter defaultCenter] addObserver:self
+                                                 selector:@selector(handleAppDidBecomeActive:)
+                                                     name:UIApplicationDidBecomeActiveNotification
+                                                   object:nil];
     }
     return self;
 }
@@ -88,7 +99,7 @@ RCT_EXPORT_METHOD(startPreview:(BOOL)isFront
         self->_targetFps = actualFps;
 
         BOOL ok = [self->_captureEngine startPreviewWithFront:isFront fps:actualFps];
-        [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession];
+        [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession isFrontCamera:isFront];
 
         resolve(@(ok));
     });
@@ -98,7 +109,7 @@ RCT_EXPORT_METHOD(stopPreview:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
     dispatch_async(dispatch_get_main_queue(), ^{
         [self->_captureEngine stopPreview];
-        [[PdkLiveManager sharedInstance] attachCaptureSession:nil];
+        [[PdkLiveManager sharedInstance] attachCaptureSession:nil isFrontCamera:self->_captureEngine.isFrontCamera];
         resolve(@(YES));
     });
 }
@@ -120,6 +131,13 @@ RCT_EXPORT_METHOD(startPublish:(NSString *)streamUrl
 
         int targetW = width > 0 ? (int)width : 1080;
         int targetH = height > 0 ? (int)height : 1920;
+        // 竖屏直播推流强制校准分辨率比例，防止宽大于高导致拉伸畸变
+        if (targetW > targetH) {
+            int temp = targetW;
+            targetW = targetH;
+            targetH = temp;
+        }
+
         int targetFps = fps > 0 ? (int)fps : 30;
         self->_targetFps = targetFps;
         self->_currentBitrateKbps = bitrateKbps > 0 ? (int)bitrateKbps : 1800;
@@ -132,7 +150,7 @@ RCT_EXPORT_METHOD(startPublish:(NSString *)streamUrl
         // 1. 启动取景采集
         if (!self->_captureEngine.isRunning) {
             [self->_captureEngine startPreviewWithFront:self->_captureEngine.isFrontCamera fps:targetFps];
-            [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession];
+            [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession isFrontCamera:self->_captureEngine.isFrontCamera];
         }
 
         // 2. 准备硬件编码器
@@ -188,7 +206,7 @@ RCT_EXPORT_METHOD(stopPublish:(RCTPromiseResolveBlock)resolve
         // 保持摄像头预览常驻，确保主播取景不黑屏
         if (!self->_captureEngine.isRunning) {
             [self->_captureEngine startPreviewWithFront:self->_captureEngine.isFrontCamera fps:self->_targetFps];
-            [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession];
+            [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession isFrontCamera:self->_captureEngine.isFrontCamera];
         }
 
         resolve(@(YES));
@@ -199,6 +217,8 @@ RCT_EXPORT_METHOD(switchCamera:(RCTPromiseResolveBlock)resolve
                   rejecter:(RCTPromiseRejectBlock)reject) {
     dispatch_async(dispatch_get_main_queue(), ^{
         BOOL ok = [self->_captureEngine switchCamera];
+        [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession
+                                                isFrontCamera:self->_captureEngine.isFrontCamera];
         resolve(@(self->_captureEngine.isFrontCamera));
     });
 }
@@ -245,6 +265,36 @@ RCT_EXPORT_METHOD(getStatus:(RCTPromiseResolveBlock)resolve
             @"isAudioMuted": @(self->_captureEngine.isMuted)
         };
         resolve(status);
+    });
+}
+
+RCT_EXPORT_METHOD(recoverCamera:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        NSLog(@"[PdkLiveModule] 收到前端摄像头自愈恢复请求，正在重新初始化采集与图层绑定...");
+        BOOL ok = [self->_captureEngine recoverSession];
+        [[PdkLiveManager sharedInstance] attachCaptureSession:self->_captureEngine.captureSession
+                                                isFrontCamera:self->_captureEngine.isFrontCamera];
+        resolve(@(ok));
+    });
+}
+
+RCT_EXPORT_METHOD(checkCameraHealth:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        PdkCameraPreviewView *previewView = [PdkLiveManager sharedInstance].currentPreviewView;
+        BOOL isSurfaceReady = (previewView != nil && previewView.window != nil);
+        BOOL isHealthy = (self->_captureEngine.isRunning && !self->_captureEngine.isInterrupted && isSurfaceReady);
+
+        NSDictionary *health = @{
+            @"isHealthy": @(isHealthy),
+            @"isOnPreview": @(self->_captureEngine.isRunning),
+            @"isStreaming": @(self->_isPublishing && self->_rtmpClient.isConnected),
+            @"isSurfaceReady": @(isSurfaceReady),
+            @"isInterrupted": @(self->_captureEngine.isInterrupted),
+            @"isFrontFacing": @(self->_captureEngine.isFrontCamera)
+        };
+        resolve(health);
     });
 }
 
@@ -360,7 +410,39 @@ RCT_EXPORT_METHOD(getStatus:(RCTPromiseResolveBlock)resolve
     [self sendEventWithName:@"onStreamStateChanged" body:body];
 }
 
+#pragma mark - App 生命周期处理
+
+- (void)handleAppDidEnterBackground:(NSNotification *)notification {
+    NSLog(@"[PdkLiveModule] App 切换到后台，触发音视频管线安全防护");
+    if (_isPublishing) {
+        // 正在推流中:
+        // iOS 系统在后台禁止摄像头捕获，但因应用配置了 UIBackgroundModes: audio，
+        // 麦克风与 AAC 编码及 RTMP 网络推流保持不中断连接。
+        NSLog(@"[PdkLiveModule] 后台推流模式: 音频采集与 RTMP 网络传输持续常驻");
+    } else {
+        // 仅在取景预览:
+        if (_captureEngine.isRunning) {
+            NSLog(@"[PdkLiveModule] 预览模式切后台: 暂时休眠摄像头以节省电量并避免系统限制");
+            [_captureEngine stopPreview];
+            _wasPreviewingBeforeBackground = YES;
+        }
+    }
+}
+
+- (void)handleAppDidBecomeActive:(NSNotification *)notification {
+    NSLog(@"[PdkLiveModule] App 切换回前台，执行摄像头自愈恢复");
+    if (_wasPreviewingBeforeBackground || (_isPublishing && !_captureEngine.isRunning)) {
+        _wasPreviewingBeforeBackground = NO;
+        NSLog(@"[PdkLiveModule] 前台自愈: 重新拉起摄像头采集与画面渲染");
+        [_captureEngine startPreviewWithFront:_captureEngine.isFrontCamera fps:_targetFps];
+        [[PdkLiveManager sharedInstance] attachCaptureSession:_captureEngine.captureSession isFrontCamera:_captureEngine.isFrontCamera];
+    } else if (_captureEngine.isRunning) {
+        [[PdkLiveManager sharedInstance] attachCaptureSession:_captureEngine.captureSession isFrontCamera:_captureEngine.isFrontCamera];
+    }
+}
+
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self stopStatsTimer];
     [_rtmpClient disconnect];
     [_videoEncoder stop];

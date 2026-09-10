@@ -460,11 +460,17 @@ public abstract class PdkCamera2Base {
      * OpenGl.
      */
     private void replaceGlInterface(GlInterface glInterface) {
+        if (this.glInterface == glInterface && cameraManager.isRunning() && glInterface.isRunning()) {
+            Log.i(TAG, "replaceGlInterface: same interface and already running, no-op");
+            return;
+        }
         if (isStreaming() || isRecording() || isOnPreview()) {
             Point size = this.glInterface.getEncoderSize();
             cameraManager.closeCamera();
-            this.glInterface.removeMediaCodecSurface();
-            this.glInterface.stop();
+            if (this.glInterface != glInterface) {
+                this.glInterface.removeMediaCodecSurface();
+                this.glInterface.stop();
+            }
             this.glInterface = glInterface;
             int w = size.x;
             int h = size.y;
@@ -476,6 +482,10 @@ public abstract class PdkCamera2Base {
             prepareGlView(w, h, rotation);
             cameraManager.openLastCamera();
         } else {
+            if (this.glInterface != glInterface) {
+                this.glInterface.removeMediaCodecSurface();
+                this.glInterface.stop();
+            }
             this.glInterface = glInterface;
         }
     }
@@ -501,14 +511,23 @@ public abstract class PdkCamera2Base {
     }
 
     public void startPreview(String cameraId, int width, int height, int fps, int rotation) {
-        if (!onPreview && !isBackground) {
+        if (onPreview) {
+            Log.i(TAG, "startPreview: already onPreview, skipping redundant start");
+            return;
+        }
+
+        if (!isBackground) {
             previewWidth = width;
             previewHeight = height;
             videoEncoder.setFps(fps);
             videoEncoder.setRotation(rotation);
             prepareGlView(cameraId, width, height, rotation);
-            cameraManager.openCameraId(cameraId);
-            onPreview = true;
+            try {
+                cameraManager.openCameraId(cameraId);
+                onPreview = true;
+            } catch (Exception e) {
+                Log.e(TAG, "openCameraId error: " + e.getMessage(), e);
+            }
         } else if (!isStreaming() && !onPreview && isBackground) {
             // if you are using background mode startPreview only work to indicate
             // that you want start with front or back camera
@@ -516,6 +535,18 @@ public abstract class PdkCamera2Base {
         } else {
             Log.e(TAG, "Streaming or preview started, ignored");
         }
+    }
+
+    /**
+     * 强力自愈重置：发生黑屏、HAL 掉线或页面切换争用时，彻底关闭旧会话并安全重启取景
+     */
+    public void recoverPreview(CameraHelper.Facing cameraFacing, int width, int height, int fps, int rotation) {
+        Log.i(TAG, "recoverPreview: executing camera preview reset");
+        try {
+            cameraManager.closeCamera();
+        } catch (Exception ignored) {}
+        onPreview = false;
+        startPreview(cameraFacing, width, height, fps, rotation);
     }
 
     public void startPreview(CameraHelper.Facing cameraFacing, int width, int height) {
@@ -684,9 +715,11 @@ public abstract class PdkCamera2Base {
         Size optimalSize = getOptimalCameraSize(cameraId, width, height);
         Log.i(TAG, "锁定底层硬件摄像头流输出尺寸: " + optimalSize.getWidth() + "x" + optimalSize.getHeight());
         android.graphics.SurfaceTexture st = glInterface.getSurfaceTexture();
-        st.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
-        android.view.Surface surface = new android.view.Surface(st);
-        cameraManager.prepareCamera(surface, videoEncoder.getFps());
+        if (st != null) {
+            st.setDefaultBufferSize(optimalSize.getWidth(), optimalSize.getHeight());
+            android.view.Surface surface = new android.view.Surface(st);
+            cameraManager.prepareCamera(surface, videoEncoder.getFps());
+        }
     }
 
     protected abstract void stopStreamImp();

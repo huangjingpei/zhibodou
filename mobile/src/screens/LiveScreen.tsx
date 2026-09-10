@@ -7,6 +7,8 @@ import {
   Platform,
   PermissionsAndroid,
   Animated,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { Colors } from '../theme/colors';
 import { Spacing } from '../theme/typography';
@@ -114,10 +116,47 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     };
   }, []);
 
-  // 点击屏幕视频画面：若已隐藏则唤醒显示控制栏，若已显示则刷新 10 秒倒计时
+  // 点击屏幕视频画面：唤醒控制栏并检测摄像头健康，若出现异常黑屏立即静默自愈
   const handleScreenPress = useCallback(() => {
     resetHideTimer();
-  }, [resetHideTimer]);
+    if (!isStreaming) {
+      rtmpEngine.checkCameraHealth().then((health) => {
+        if (!health.isHealthy) {
+          console.log('[LiveScreen] 点击触发摄像头静默自愈');
+          rtmpEngine.recoverCamera().catch(() => {});
+        }
+      }).catch(() => {});
+    }
+  }, [resetHideTimer, isStreaming]);
+
+  // 监听应用前后台切换生命周期，实现自动自愈与画面唤醒
+  useEffect(() => {
+    const handleAppStateChange = async (nextAppState: AppStateStatus) => {
+      console.log(`[LiveScreen] AppState changed to: ${nextAppState}`);
+      if (nextAppState === 'active') {
+        // 从后台恢复至前台：执行相机健康自愈
+        try {
+          const health = await rtmpEngine.checkCameraHealth();
+          if (!health.isHealthy || (!health.isOnPreview && !isStreaming)) {
+            console.log('[LiveScreen] 回前台检测到取景未激活，自动恢复硬件摄像头画面');
+            await rtmpEngine.startPreview(
+              videoSettings.isFrontCamera,
+              videoSettings.resolution.width,
+              videoSettings.resolution.height,
+              videoSettings.fps
+            );
+          }
+        } catch (e) {
+          console.warn('[LiveScreen] 回前台恢复取景异常:', e);
+        }
+      }
+    };
+
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, [isStreaming, videoSettings]);
 
   // 请求系统摄像头与音频权限，并在授权后自动开启底层硬件取景预览
   useEffect(() => {
@@ -151,6 +190,9 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
     initCameraPreview();
 
     return () => {
+      if (isStreaming) {
+        rtmpEngine.stopPublish().catch(() => {});
+      }
       rtmpEngine.stopPreview();
     };
   }, []);
@@ -315,7 +357,29 @@ export const LiveScreen: React.FC<LiveScreenProps> = ({
         maskedPhone={maskedPhone}
         onProfilePress={() => {
           resetHideTimer();
-          onNavigateProfile();
+          if (isStreaming) {
+            Alert.alert(
+              '直播进行中',
+              '当前正在实时推流，离开直播间将结束本次直播。是否确定前往管理中心？',
+              [
+                { text: '取消', style: 'cancel' },
+                {
+                  text: '结束并前往',
+                  style: 'destructive',
+                  onPress: async () => {
+                    await rtmpEngine.stopPublish().catch(() => {});
+                    try {
+                      await liveService.stopLive().catch(() => {});
+                    } catch {}
+                    setIsStreaming(false);
+                    onNavigateProfile();
+                  },
+                },
+              ]
+            );
+          } else {
+            onNavigateProfile();
+          }
         }}
       />
 

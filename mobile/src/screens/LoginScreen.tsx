@@ -19,6 +19,7 @@ import { ZliveLogo } from '../components/ZliveLogo';
 import { DevModeModal } from '../components/DevModeModal';
 import { devSettingsService } from '../services/devSettingsService';
 import { AgreementModal, AgreementType } from '../components/AgreementModal';
+import { authStorageService } from '../services/authStorageService';
 
 interface LoginScreenProps {
   onLoginSuccess: (result: LoginResult) => void;
@@ -28,14 +29,35 @@ interface LoginScreenProps {
  * 现代暗色风格登录与工作站席位授权接入页面
  * 集成 Zlive 多彩品牌图标与合规协议验证
  * 支持连续点击 Logo 6 次呼出高级网络与流媒体设置
+ * 支持“记住密码”安全沙盒持久化，提升日常推流工作便利性
  */
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const [phone, setPhone] = useState('13800000000');
   const [password, setPassword] = useState('123456');
+  const [rememberPassword, setRememberPassword] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
   const [cardKey, setCardKey] = useState('');
   const [needCardKey, setNeedCardKey] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+
+  // 页面载入时：自动从原生私有安全沙盒读取上次保存的账号与“记住密码”状态
+  React.useEffect(() => {
+    try {
+      const saved = authStorageService.getSavedCredentials();
+      if (saved) {
+        if (saved.phone) setPhone(saved.phone);
+        if (saved.rememberPassword) {
+          setRememberPassword(true);
+          if (saved.password) setPassword(saved.password);
+        } else {
+          setRememberPassword(false);
+        }
+      }
+    } catch (e) {
+      console.warn('[LoginScreen] 读取本地保存凭据异常:', e);
+    }
+  }, []);
 
   // 用户服务协议与隐私政策合规状态
   const [agreedToTerms, setAgreedToTerms] = useState(false);
@@ -86,6 +108,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
     // 若高级网络设置配置了自定义 RTMP 直推地址，直接进入推流室
     if (devSettingsService.isDirectRtmp()) {
+      authStorageService.saveCredentials({
+        phone: phone.trim() || '13800000000',
+        password: rememberPassword ? password : '',
+        rememberPassword: rememberPassword,
+        authMode: 'DIRECT_RTMP',
+        lastLoginTime: Date.now(),
+      });
       onLoginSuccess({
         tokenName: 'satoken',
         tokenValue: 'dev-direct-rtmp-token',
@@ -111,6 +140,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     setIsLoading(true);
     try {
       const res = await pdkClient.login(phone, password, cardKey);
+      // 登录成功：根据“记住密码”状态持久化到原生私有沙盒存储
+      authStorageService.saveCredentials({
+        phone: phone.trim(),
+        password: rememberPassword ? password : '',
+        rememberPassword: rememberPassword,
+        tokenName: res.tokenName,
+        tokenValue: res.tokenValue,
+        lastLoginTime: Date.now(),
+      });
       onLoginSuccess(res);
     } catch (err: any) {
       if (err instanceof PdkClientError) {
@@ -186,15 +224,43 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
           {/* 密码输入框 */}
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>登录密码</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="请输入密码"
-              placeholderTextColor={Colors.textMuted}
-              value={password}
-              onChangeText={setPassword}
-              secureTextEntry
-              autoCapitalize="none"
-            />
+            <View style={styles.passwordInputContainer}>
+              <TextInput
+                style={[styles.textInput, styles.passwordInput]}
+                placeholder="请输入密码"
+                placeholderTextColor={Colors.textMuted}
+                value={password}
+                onChangeText={setPassword}
+                secureTextEntry={!showPassword}
+                autoCapitalize="none"
+              />
+              <TouchableOpacity
+                style={styles.eyeBtn}
+                onPress={() => setShowPassword(!showPassword)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.eyeBtnText}>{showPassword ? '👁️' : '🙈'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* 记住密码勾选选项 (合规自愿选择) */}
+          <View style={styles.rememberRow}>
+            <TouchableOpacity
+              style={styles.checkboxTouch}
+              onPress={() => setRememberPassword(!rememberPassword)}
+              activeOpacity={0.7}
+            >
+              <View style={[styles.checkbox, rememberPassword && styles.checkboxChecked]}>
+                {rememberPassword && <Text style={styles.checkboxCheckmark}>✓</Text>}
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => setRememberPassword(!rememberPassword)}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.rememberText}>记住密码（下次免手动输入）</Text>
+            </TouchableOpacity>
           </View>
 
           {/* 新设备首次接入席位授权码输入区 (40380 自动触发) */}
@@ -405,6 +471,36 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.borderSubtle,
     ...Typography.body,
+  },
+  passwordInputContainer: {
+    position: 'relative',
+    justifyContent: 'center',
+  },
+  passwordInput: {
+    paddingRight: 48,
+  },
+  eyeBtn: {
+    position: 'absolute',
+    right: 12,
+    height: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+  },
+  eyeBtnText: {
+    fontSize: 18,
+  },
+  rememberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: Spacing.sm,
+    marginTop: 2,
+  },
+  rememberText: {
+    ...Typography.bodySmall,
+    color: Colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '500',
   },
   cardKeyHighlight: {
     backgroundColor: 'rgba(245, 158, 11, 0.08)',

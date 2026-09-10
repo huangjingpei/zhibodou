@@ -17,6 +17,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, weak, nullable) PdkCameraPreviewView *currentPreviewView;
 @property (nonatomic, weak, nullable) PdkLiveModule *currentLiveModule;
+@property (nonatomic, assign) BOOL isFrontCamera;
 
 + (instancetype)sharedInstance;
 
@@ -24,6 +25,7 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)detachPreviewView:(PdkCameraPreviewView *)view;
 
 - (void)attachCaptureSession:(nullable AVCaptureSession *)session;
+- (void)attachCaptureSession:(nullable AVCaptureSession *)session isFrontCamera:(BOOL)isFrontCamera;
 
 @end
 

@@ -20,6 +20,18 @@ class PdkCameraContainer(context: Context) : FrameLayout(context) {
     val openGlView: PdkOpenGlView = PdkOpenGlView(context).apply {
         setAspectRatioMode(AspectRatioMode.Fill)
         layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
+        setSurfaceListener(object : PdkOpenGlView.SurfaceListener {
+            override fun onSurfaceCreated(view: PdkOpenGlView) {
+                PdkLiveManager.onSurfaceCreated(view)
+            }
+
+            override fun onSurfaceChanged(view: PdkOpenGlView, width: Int, height: Int) {
+            }
+
+            override fun onSurfaceDestroyed(view: PdkOpenGlView) {
+                PdkLiveManager.onSurfaceDestroyed(view)
+            }
+        })
     }
 
     init {

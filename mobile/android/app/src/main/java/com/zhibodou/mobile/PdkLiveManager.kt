@@ -25,4 +25,12 @@ object PdkLiveManager {
             currentView = null
         }
     }
+
+    fun onSurfaceCreated(view: PdkOpenGlView) {
+        liveModule?.onSurfaceCreated(view)
+    }
+
+    fun onSurfaceDestroyed(view: PdkOpenGlView) {
+        liveModule?.onSurfaceDestroyed(view)
+    }
 }

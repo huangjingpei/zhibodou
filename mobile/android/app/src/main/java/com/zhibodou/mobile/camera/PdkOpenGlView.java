@@ -30,16 +30,28 @@ import com.pedro.library.view.TakePhotoCallback;
 
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 @RequiresApi(api = Build.VERSION_CODES.JELLY_BEAN_MR2)
 public class PdkOpenGlView extends SurfaceView
     implements GlInterface, SurfaceTexture.OnFrameAvailableListener, SurfaceHolder.Callback {
 
+  public interface SurfaceListener {
+    void onSurfaceCreated(PdkOpenGlView view);
+    void onSurfaceChanged(PdkOpenGlView view, int width, int height);
+    void onSurfaceDestroyed(PdkOpenGlView view);
+  }
+
   private static final String TAG = "PdkOpenGlView";
 
   private final AtomicBoolean running = new AtomicBoolean(false);
+  private volatile boolean isSurfaceReady = false;
+  private volatile boolean wasRunning = false;
+  private SurfaceListener surfaceListener = null;
+
   private final MainRender mainRender = new MainRender();
   private final SurfaceManager surfaceManagerPhoto = new SurfaceManager();
   private final SurfaceManager surfaceManager = new SurfaceManager();
@@ -70,6 +82,14 @@ public class PdkOpenGlView extends SurfaceView
     super(context, attrs);
     aspectRatioMode = AspectRatioMode.Fill;
     getHolder().addCallback(this);
+  }
+
+  public void setSurfaceListener(SurfaceListener listener) {
+    this.surfaceListener = listener;
+  }
+
+  public boolean isSurfaceReady() {
+    return isSurfaceReady && getHolder().getSurface() != null && getHolder().getSurface().isValid();
   }
 
   @Override
@@ -297,23 +317,41 @@ public class PdkOpenGlView extends SurfaceView
 
   @Override
   public void start() {
+    wasRunning = true;
+    Surface surface = getHolder().getSurface();
+    if (surface == null || !surface.isValid()) {
+      Log.w(TAG, "start: underlying surface not yet valid");
+      return;
+    }
+    if (running.get()) {
+      Log.i(TAG, "start: renderer already running");
+      return;
+    }
+    final int w = encoderWidth > 0 ? encoderWidth : 1920;
+    final int h = encoderHeight > 0 ? encoderHeight : 1080;
     executor = ExtensionsKt.newSingleThreadExecutor(threadQueue);
     ExecutorService executor = this.executor;
+    if (executor == null) return;
     ExtensionsKt.secureSubmit(executor, () -> {
-      surfaceManager.release();
-      surfaceManager.eglSetup(getHolder().getSurface());
-      surfaceManager.makeCurrent();
-      mainRender.initGl(getContext(), encoderWidth, encoderHeight, encoderWidth, encoderHeight);
-      surfaceManagerPhoto.release();
-      surfaceManagerPhoto.eglSetup(encoderWidth, encoderHeight, surfaceManager);
-      running.set(true);
-      mainRender.getSurfaceTexture().setOnFrameAvailableListener(this);
-      forceRenderer.start(() -> {
-        ExecutorService ex = this.executor;
-        if (ex == null) return null;
-        ex.execute(() -> draw(true));
-        return null;
-      });
+      try {
+        surfaceManager.release();
+        surfaceManager.eglSetup(getHolder().getSurface());
+        surfaceManager.makeCurrent();
+        mainRender.initGl(getContext(), w, h, w, h);
+        surfaceManagerPhoto.release();
+        surfaceManagerPhoto.eglSetup(w, h, surfaceManager);
+        running.set(true);
+        mainRender.getSurfaceTexture().setOnFrameAvailableListener(this);
+        forceRenderer.start(() -> {
+          ExecutorService ex = this.executor;
+          if (ex == null) return null;
+          ex.execute(() -> draw(true));
+          return null;
+        });
+      } catch (Exception e) {
+        Log.e(TAG, "start eglSetup error: " + e.getMessage(), e);
+        running.set(false);
+      }
       return null;
     });
   }
@@ -336,7 +374,7 @@ public class PdkOpenGlView extends SurfaceView
       }
       return null;
     });
-    executor.shutdownNow();
+    executor.shutdown();
     this.executor = null;
   }
 
@@ -350,6 +388,11 @@ public class PdkOpenGlView extends SurfaceView
 
   @Override
   public void surfaceCreated(@NonNull SurfaceHolder holder) {
+    Log.i(TAG, "surfaceCreated: surface is now valid");
+    isSurfaceReady = true;
+    if (surfaceListener != null) {
+      surfaceListener.onSurfaceCreated(this);
+    }
   }
 
   @Override
@@ -357,10 +400,18 @@ public class PdkOpenGlView extends SurfaceView
     this.previewWidth = width;
     this.previewHeight = height;
     mainRender.setPreviewSize(previewWidth, previewHeight);
+    if (surfaceListener != null) {
+      surfaceListener.onSurfaceChanged(this, width, height);
+    }
   }
 
   @Override
   public void surfaceDestroyed(@NonNull SurfaceHolder holder) {
+    Log.i(TAG, "surfaceDestroyed: surface destroyed by system");
+    isSurfaceReady = false;
     stop();
+    if (surfaceListener != null) {
+      surfaceListener.onSurfaceDestroyed(this);
+    }
   }
 }

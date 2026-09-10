@@ -262,6 +262,41 @@ class RtmpEngine {
     return false;
   }
 
+  /**
+   * 强力自愈重启摄像头与取景管线
+   * 彻底解决黑屏死锁或 HAL 掉线
+   */
+  public async recoverCamera(): Promise<boolean> {
+    if (PdkLive && typeof PdkLive.recoverCamera === 'function') {
+      try {
+        return await PdkLive.recoverCamera();
+      } catch (e) {
+        console.warn('[RtmpEngine] recoverCamera 异常:', e);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * 检查底层相机与 Surface 健康状态
+   */
+  public async checkCameraHealth(): Promise<{
+    isHealthy: boolean;
+    isOnPreview: boolean;
+    isStreaming: boolean;
+    isSurfaceReady: boolean;
+  }> {
+    if (PdkLive && typeof PdkLive.checkCameraHealth === 'function') {
+      try {
+        return await PdkLive.checkCameraHealth();
+      } catch (e) {
+        console.warn('[RtmpEngine] checkCameraHealth 异常:', e);
+      }
+    }
+    return { isHealthy: true, isOnPreview: true, isStreaming: this.isStreaming, isSurfaceReady: true };
+  }
+
   private emitStats(): void {
     this.statsListeners.forEach((fn) => {
       try {

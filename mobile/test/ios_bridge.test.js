@@ -76,6 +76,18 @@ test('iOS Native Bridge - PdkLiveModule method signatures and events', async () 
         isAudioMuted: this.isMuted,
       };
     },
+    async recoverCamera() {
+      this.isOnPreview = true;
+      return true;
+    },
+    async checkCameraHealth() {
+      return {
+        isHealthy: true,
+        isOnPreview: this.isOnPreview,
+        isStreaming: this.isStreaming,
+        isSurfaceReady: true,
+      };
+    },
   };
 
   assert.strictEqual(await mockIosLiveModule.startPreview(true, 1080, 1920, 30), true);
@@ -89,6 +101,10 @@ test('iOS Native Bridge - PdkLiveModule method signatures and events', async () 
 
   assert.strictEqual(await mockIosLiveModule.stopPublish(), true);
   assert.strictEqual(mockIosLiveModule.isStreaming, false);
+
+  assert.strictEqual(await mockIosLiveModule.recoverCamera(), true);
+  const health = await mockIosLiveModule.checkCameraHealth();
+  assert.strictEqual(health.isHealthy, true);
 
   assert.strictEqual(emittedEvents.length, 2);
   assert.strictEqual(emittedEvents[0].body.state, 'CONNECTED');

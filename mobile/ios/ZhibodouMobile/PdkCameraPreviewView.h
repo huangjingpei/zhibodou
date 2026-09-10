@@ -15,6 +15,7 @@ NS_ASSUME_NONNULL_BEGIN
 @property (nonatomic, readonly) AVCaptureVideoPreviewLayer *previewLayer;
 
 - (void)setCaptureSession:(nullable AVCaptureSession *)session;
+- (void)setCaptureSession:(nullable AVCaptureSession *)session isFrontCamera:(BOOL)isFrontCamera;
 
 @end
 

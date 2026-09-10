@@ -74,10 +74,39 @@ class PdkDeviceModule(private val reactContext: ReactApplicationContext) :
         prefs.edit().putString(KEY_DEV_CONFIG, configJson).apply()
     }
 
+    @ReactMethod(isBlockingSynchronousMethod = true)
+    fun getAuthCredentialsSync(): String {
+        val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getString(KEY_AUTH_CREDENTIALS, "") ?: ""
+    }
+
+    @ReactMethod
+    fun getAuthCredentials(promise: Promise) {
+        try {
+            val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            promise.resolve(prefs.getString(KEY_AUTH_CREDENTIALS, "") ?: "")
+        } catch (e: Exception) {
+            promise.reject("AUTH_CREDENTIALS_ERR", e.message, e)
+        }
+    }
+
+    @ReactMethod
+    fun saveAuthCredentials(credentialsJson: String) {
+        val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().putString(KEY_AUTH_CREDENTIALS, credentialsJson).apply()
+    }
+
+    @ReactMethod
+    fun clearAuthCredentials() {
+        val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.edit().remove(KEY_AUTH_CREDENTIALS).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "pdk_device_identity"
         private const val KEY_DEVICE_ID = "persisted_device_id"
         private const val KEY_DEV_CONFIG = "persisted_dev_config"
+        private const val KEY_AUTH_CREDENTIALS = "persisted_auth_credentials"
 
         // Widevine DRM UUID: edef8ba9-79d6-4ace-a3c8-27dcd51d21ed
         private val WIDEVINE_UUID = UUID(-0x121074568629b532L, -0x5c37d82326e2229eL)

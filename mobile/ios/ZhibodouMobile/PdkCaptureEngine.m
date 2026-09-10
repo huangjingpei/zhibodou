@@ -18,6 +18,8 @@
     AVCaptureAudioDataOutput *_audioOutput;
 
     int _targetFps;
+    BOOL _shouldBeRunning;
+    BOOL _isInterrupted;
 }
 @end
 
@@ -35,12 +37,67 @@
         _isMuted = NO;
         _isTorchOn = NO;
         _targetFps = 30;
+        _shouldBeRunning = NO;
+        _isInterrupted = NO;
+
+        [self registerSessionNotifications];
     }
     return self;
 }
 
+- (void)registerSessionNotifications {
+    NSNotificationCenter *nc = [NSNotificationCenter defaultCenter];
+    [nc addObserver:self
+           selector:@selector(sessionWasInterrupted:)
+               name:AVCaptureSessionWasInterruptedNotification
+             object:_captureSession];
+    [nc addObserver:self
+           selector:@selector(sessionInterruptionEnded:)
+               name:AVCaptureSessionInterruptionEndedNotification
+             object:_captureSession];
+    [nc addObserver:self
+           selector:@selector(sessionRuntimeError:)
+               name:AVCaptureSessionRuntimeErrorNotification
+             object:_captureSession];
+}
+
+- (void)sessionWasInterrupted:(NSNotification *)notification {
+    _isInterrupted = YES;
+    NSInteger reason = [notification.userInfo[AVCaptureSessionInterruptionReasonKey] integerValue];
+    NSLog(@"[PdkCaptureEngine] AVCaptureSession 被系统打断 (Reason=%ld)", (long)reason);
+}
+
+- (void)sessionInterruptionEnded:(NSNotification *)notification {
+    NSLog(@"[PdkCaptureEngine] AVCaptureSession 系统打断结束，正在尝试自愈恢复...");
+    _isInterrupted = NO;
+    if (_shouldBeRunning) {
+        dispatch_async(_captureSessionQueue, ^{
+            if (!self->_captureSession.isRunning) {
+                [self->_captureSession startRunning];
+                NSLog(@"[PdkCaptureEngine] 打断恢复完成，AVCaptureSession 已重新启动");
+            }
+        });
+    }
+}
+
+- (void)sessionRuntimeError:(NSNotification *)notification {
+    NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
+    NSLog(@"[PdkCaptureEngine] AVCaptureSession 运行时错误: %@", error);
+
+    // 如果系统 media services 发生重置或设备故障，自动尝试全链路自愈恢复
+    if (error.code == AVErrorMediaServicesWereReset || self->_shouldBeRunning) {
+        dispatch_async(self->_captureSessionQueue, ^{
+            [self recoverSessionInternal];
+        });
+    }
+}
+
 - (BOOL)isRunning {
     return _captureSession.isRunning;
+}
+
+- (BOOL)isInterrupted {
+    return _isInterrupted;
 }
 
 - (AVCaptureDevice *)cameraWithPosition:(AVCaptureDevicePosition)position {
@@ -54,6 +111,7 @@
 - (BOOL)startPreviewWithFront:(BOOL)isFront fps:(int)fps {
     _isFrontCamera = isFront;
     _targetFps = fps > 0 ? fps : 30;
+    _shouldBeRunning = YES;
 
     dispatch_async(_captureSessionQueue, ^{
         [self setupAudioSession];
@@ -68,12 +126,37 @@
 }
 
 - (void)stopPreview {
+    _shouldBeRunning = NO;
     dispatch_async(_captureSessionQueue, ^{
         if (self->_captureSession.isRunning) {
             [self->_captureSession stopRunning];
             NSLog(@"[PdkCaptureEngine] 摄像头采集已停止");
         }
     });
+}
+
+- (BOOL)recoverSessionInternal {
+    NSLog(@"[PdkCaptureEngine] 执行底层硬件采集管线自愈重置...");
+    if (_captureSession.isRunning) {
+        [_captureSession stopRunning];
+    }
+    [self setupAudioSession];
+    [self setupCaptureSession];
+    if (!_captureSession.isRunning) {
+        [_captureSession startRunning];
+    }
+    _isInterrupted = NO;
+    NSLog(@"[PdkCaptureEngine] 底层硬件采集管线自愈完成，状态: isRunning=%d", _captureSession.isRunning);
+    return _captureSession.isRunning;
+}
+
+- (BOOL)recoverSession {
+    _shouldBeRunning = YES;
+    __block BOOL success = NO;
+    dispatch_sync(_captureSessionQueue, ^{
+        success = [self recoverSessionInternal];
+    });
+    return success;
 }
 
 - (void)setupAudioSession {
@@ -259,6 +342,7 @@ didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
 }
 
 - (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
     [self stopPreview];
 }
 

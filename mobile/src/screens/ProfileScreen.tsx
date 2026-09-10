@@ -15,6 +15,7 @@ import { pdkClient } from '../api/pdkClient';
 import { deviceService } from '../services/deviceService';
 import { DeviceLicense, LoginResult, UserProfile } from '../api/types';
 import { AgreementModal, AgreementType } from '../components/AgreementModal';
+import { authStorageService } from '../services/authStorageService';
 
 interface ProfileScreenProps {
   loginResult: LoginResult;
@@ -145,6 +146,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
           style: 'destructive',
           onPress: async () => {
             try {
+              authStorageService.clearCredentials();
               await pdkClient.unbindDevice().catch(() => {});
               await pdkClient.logout().catch(() => {});
               Alert.alert(

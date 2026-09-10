@@ -19,7 +19,7 @@ import com.zhibodou.mobile.camera.PdkRtmpCamera
  * 4. 原生纯 Java RTMP 客户端网络推流，直通 MediaMTX 流媒体服务器
  */
 class PdkLiveModule(private val reactContext: ReactApplicationContext) :
-    ReactContextBaseJavaModule(reactContext), ConnectChecker {
+    ReactContextBaseJavaModule(reactContext), ConnectChecker, LifecycleEventListener {
 
     companion object {
         private const val TAG = "PdkLiveModule"
@@ -34,8 +34,16 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
     private val mainHandler = Handler(Looper.getMainLooper())
     private var statsRunnable: Runnable? = null
 
+    // 本地取景状态记忆，用于前后台平滑自愈
+    private var shouldBePreviewing: Boolean = false
+    private var wasPreviewingBeforePause: Boolean = false
+    private var lastPreviewWidth: Int = 1080
+    private var lastPreviewHeight: Int = 1920
+    private var lastPreviewFps: Int = 30
+
     init {
         PdkLiveManager.liveModule = this
+        reactContext.addLifecycleEventListener(this)
 
         // 核心防护：安装全局未捕获异常拦截器
         // 彻底消除 Pedro 库与 Android SurfaceTexture 在 stopStream / stopPreview 异步销毁时的
@@ -62,6 +70,89 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
 
     override fun getName(): String = "PdkLiveModule"
 
+    override fun onHostResume() {
+        Log.i(TAG, "onHostResume: 应用切回前台")
+        mainHandler.post {
+            handleHostResume()
+        }
+    }
+
+    override fun onHostPause() {
+        Log.i(TAG, "onHostPause: 应用退至后台或锁屏")
+        mainHandler.post {
+            handleHostPause()
+        }
+    }
+
+    override fun onHostDestroy() {
+        Log.i(TAG, "onHostDestroy: 宿主 Activity 销毁")
+        mainHandler.post {
+            handleHostDestroy()
+        }
+    }
+
+    private fun handleHostPause() {
+        val camera = rtmpCamera
+        if (camera != null) {
+            if (isStreamingActive && camera.isStreaming) {
+                // 推流中切后台：安全切换至离屏渲染，保持 RTMP 推流与麦克风持续工作
+                Log.i(TAG, "推流中切后台，无缝切换至离屏渲染保持流在线")
+                try {
+                    camera.replaceView(reactContext)
+                } catch (e: Exception) {
+                    Log.w(TAG, "切后台离屏渲染失败: ${e.message}")
+                }
+            } else if (camera.isOnPreview || shouldBePreviewing) {
+                // 仅预览时切后台：释放硬件相机，避免触发 Android 9+ 后台限制并节省功耗
+                Log.i(TAG, "本地预览退后台，安全暂停取景释放相机硬件")
+                wasPreviewingBeforePause = true
+                try {
+                    camera.stopCamera()
+                } catch (e: Exception) {
+                    Log.w(TAG, "暂停相机失败: ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun handleHostResume() {
+        val camera = rtmpCamera
+        val view = PdkLiveManager.currentView
+        if (camera != null) {
+            if (isStreamingActive && camera.isStreaming) {
+                // 推流中切回前台：无缝接回前台渲染视图
+                if (view != null && view.isSurfaceReady()) {
+                    Log.i(TAG, "推流返回前台且 Surface 就绪，无缝接回 PdkOpenGlView 渲染")
+                    try {
+                        camera.replaceView(view)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "恢复前台渲染失败: ${e.message}")
+                    }
+                } else {
+                    Log.i(TAG, "推流返回前台，物理 Surface 尚未就绪，等待 onSurfaceCreated 接回渲染")
+                }
+            } else if (wasPreviewingBeforePause || shouldBePreviewing) {
+                // 预览切回前台：仅当物理 Surface 已经就绪时才立即恢复，否则等待 onSurfaceCreated 触发
+                if (view != null && view.isSurfaceReady()) {
+                    Log.i(TAG, "预览返回前台且 Surface 就绪，立即恢复高清取景")
+                    wasPreviewingBeforePause = false
+                    startPreviewInternal()
+                } else {
+                    Log.i(TAG, "预览返回前台，物理 Surface 尚未就绪，等待 onSurfaceCreated 触发恢复")
+                }
+            }
+        }
+    }
+
+    private fun handleHostDestroy() {
+        try {
+            stopStatsTimer()
+            rtmpCamera?.stopStream()
+            rtmpCamera?.stopCamera()
+        } catch (_: Exception) {}
+        rtmpCamera = null
+    }
+
     @Synchronized
     private fun getOrCreateCamera(): PdkRtmpCamera {
         var camera = rtmpCamera
@@ -80,9 +171,16 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
     fun onViewAttached(view: PdkOpenGlView) {
         mainHandler.post {
             try {
+                Log.i(TAG, "onViewAttached: 新视图已挂载 (isSurfaceReady=${view.isSurfaceReady()}, shouldBePreviewing=$shouldBePreviewing)")
                 val camera = rtmpCamera
                 if (camera != null) {
-                    camera.replaceView(view)
+                    if (camera.getGlInterface() != view) {
+                        camera.replaceView(view)
+                    }
+                    if ((shouldBePreviewing || wasPreviewingBeforePause) && view.isSurfaceReady() && !camera.isOnPreview) {
+                        wasPreviewingBeforePause = false
+                        startPreviewInternal()
+                    }
                 } else {
                     rtmpCamera = PdkRtmpCamera(view, this)
                 }
@@ -95,9 +193,97 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
     fun onViewDetached(view: PdkOpenGlView) {
         mainHandler.post {
             try {
-                rtmpCamera?.replaceView(reactContext)
+                Log.i(TAG, "onViewDetached: 视图已解绑 (isStreaming=$isStreamingActive)")
+                if (isStreamingActive && rtmpCamera?.isStreaming == true) {
+                    rtmpCamera?.replaceView(reactContext)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to detach view: ${e.message}", e)
+            }
+        }
+    }
+
+    @Volatile
+    private var pendingPreviewPromise: Promise? = null
+
+    @Synchronized
+    private fun startPreviewInternal(promise: Promise? = null) {
+        if (!shouldBePreviewing) return
+        val camera = getOrCreateCamera()
+        val view = PdkLiveManager.currentView
+        if (view != null && !view.isSurfaceReady()) {
+            Log.i(TAG, "startPreviewInternal: 物理渲染 Surface 尚未就绪，等待 onSurfaceCreated 激活...")
+            if (promise != null) pendingPreviewPromise = promise
+            return
+        }
+        if (camera.isOnPreview) {
+            Log.i(TAG, "startPreviewInternal: 相机已处于取景状态，无需重复启动")
+            pendingPreviewPromise?.resolve(true)
+            pendingPreviewPromise = null
+            promise?.resolve(true)
+            return
+        }
+        val facing = if (isFrontFacing) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
+        val rotation = CameraHelper.getCameraOrientation(reactContext)
+        val camW = maxOf(lastPreviewWidth, lastPreviewHeight)
+        val camH = minOf(lastPreviewWidth, lastPreviewHeight)
+        try {
+            camera.startPreview(facing, camW, camH, lastPreviewFps, rotation)
+            Log.i(TAG, "startPreviewInternal: 硬件摄像头开启成功 ($camW x $camH @ $lastPreviewFps fps)")
+            pendingPreviewPromise?.resolve(true)
+            pendingPreviewPromise = null
+            promise?.resolve(true)
+        } catch (e: Exception) {
+            Log.e(TAG, "startPreviewInternal 异常: ${e.message}", e)
+            pendingPreviewPromise?.reject("PREVIEW_ERROR", e.message, e)
+            pendingPreviewPromise = null
+            promise?.reject("PREVIEW_ERROR", e.message, e)
+        }
+    }
+
+    fun onSurfaceCreated(view: PdkOpenGlView) {
+        mainHandler.post {
+            val camera = rtmpCamera
+            if (camera != null) {
+                if (isStreamingActive && camera.isStreaming) {
+                    Log.i(TAG, "onSurfaceCreated: 推流中物理 Surface 重建完成，无缝接回前台渲染")
+                    try {
+                        camera.replaceView(view)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "onSurfaceCreated replaceView 异常: ${e.message}")
+                    }
+                } else if (wasPreviewingBeforePause || shouldBePreviewing) {
+                    Log.i(TAG, "onSurfaceCreated: 预览状态物理 Surface 重建完成，恢复硬件取景")
+                    wasPreviewingBeforePause = false
+                    startPreviewInternal()
+                }
+            } else if (shouldBePreviewing) {
+                Log.i(TAG, "onSurfaceCreated: 物理 Surface 就绪且待取景，启动相机")
+                startPreviewInternal()
+            }
+        }
+    }
+
+    fun onSurfaceDestroyed(view: PdkOpenGlView) {
+        mainHandler.post {
+            val camera = rtmpCamera
+            if (camera != null) {
+                if (isStreamingActive && camera.isStreaming) {
+                    Log.i(TAG, "onSurfaceDestroyed: 推流中 Surface 销毁，切换至离屏缓冲")
+                    try {
+                        camera.replaceView(reactContext)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "onSurfaceDestroyed 离屏切换异常: ${e.message}")
+                    }
+                } else if (camera.isOnPreview) {
+                    Log.i(TAG, "onSurfaceDestroyed: 预览中 Surface 销毁，安全关闭相机")
+                    wasPreviewingBeforePause = true
+                    try {
+                        camera.stopCamera()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "onSurfaceDestroyed 停止相机异常: ${e.message}")
+                    }
+                }
             }
         }
     }
@@ -105,36 +291,14 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun startPreview(isFront: Boolean, width: Int, height: Int, fps: Int, promise: Promise) {
         mainHandler.post {
-            fun doStart(retries: Int) {
-                try {
-                    val camera = getOrCreateCamera()
-                    isFrontFacing = isFront
-                    val facing = if (isFront) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
-                    val targetW = if (width > 0) width else 1080
-                    val targetH = if (height > 0) height else 1920
-                    val targetFps = if (fps > 0) fps else 30
-                    val rotation = CameraHelper.getCameraOrientation(reactContext)
+            shouldBePreviewing = true
+            wasPreviewingBeforePause = false
+            lastPreviewWidth = if (width > 0) width else 1080
+            lastPreviewHeight = if (height > 0) height else 1920
+            lastPreviewFps = if (fps > 0) fps else 30
+            isFrontFacing = isFront
 
-                    // RootEncoder 约定：输入必须为相机横向基准尺寸 (宽 >= 高，如 1920x1080)
-                    // 竖屏模式 (rotation=90/270) 下底层会自动旋转为 1080x1920 竖屏
-                    val camW = maxOf(targetW, targetH)
-                    val camH = minOf(targetW, targetH)
-
-                    if (!camera.isOnPreview) {
-                        camera.startPreview(facing, camW, camH, targetFps, rotation)
-                    }
-                    promise.resolve(true)
-                } catch (e: Exception) {
-                    if (retries > 0) {
-                        Log.w(TAG, "startPreview surface not ready, retrying in 150ms... remaining: $retries")
-                        mainHandler.postDelayed({ doStart(retries - 1) }, 150)
-                    } else {
-                        Log.e(TAG, "startPreview error after retries: ${e.message}", e)
-                        promise.reject("PREVIEW_ERROR", e.message, e)
-                    }
-                }
-            }
-            doStart(4)
+            startPreviewInternal(promise)
         }
     }
 
@@ -142,6 +306,9 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
     fun stopPreview(promise: Promise) {
         mainHandler.post {
             try {
+                shouldBePreviewing = false
+                wasPreviewingBeforePause = false
+                pendingPreviewPromise = null
                 if (rtmpCamera?.isOnPreview == true) {
                     rtmpCamera?.stopPreview()
                 }
@@ -344,6 +511,52 @@ class PdkLiveModule(private val reactContext: ReactApplicationContext) :
                 putBoolean("isFrontFacing", isFrontFacing)
                 putBoolean("isLanternEnabled", camera?.isLanternEnabled == true)
                 putBoolean("isAudioMuted", camera?.isAudioMuted == true)
+            }
+            promise.resolve(map)
+        }
+    }
+
+    @ReactMethod
+    fun recoverCamera(promise: Promise) {
+        mainHandler.post {
+            try {
+                Log.i(TAG, "recoverCamera: 收到前端自愈重置指令，正在彻底重启摄像头与渲染管线")
+                try {
+                    rtmpCamera?.stopCamera()
+                } catch (_: Exception) {}
+                val view = PdkLiveManager.currentView
+                val camera = if (view != null) {
+                    PdkRtmpCamera(view, this)
+                } else {
+                    PdkRtmpCamera(reactContext, this)
+                }
+                rtmpCamera = camera
+
+                val facing = if (isFrontFacing) CameraHelper.Facing.FRONT else CameraHelper.Facing.BACK
+                val rotation = CameraHelper.getCameraOrientation(reactContext)
+                val camW = maxOf(lastPreviewWidth, lastPreviewHeight)
+                val camH = minOf(lastPreviewWidth, lastPreviewHeight)
+                camera.recoverPreview(facing, camW, camH, lastPreviewFps, rotation)
+                Log.i(TAG, "recoverCamera: 自愈重启完成")
+                promise.resolve(true)
+            } catch (e: Exception) {
+                Log.e(TAG, "recoverCamera 失败: ${e.message}", e)
+                promise.reject("RECOVER_ERROR", e.message, e)
+            }
+        }
+    }
+
+    @ReactMethod
+    fun checkCameraHealth(promise: Promise) {
+        mainHandler.post {
+            val camera = rtmpCamera
+            val view = PdkLiveManager.currentView
+            val isHealthy = camera != null && (camera.isOnPreview || camera.isStreaming) && (view?.isSurfaceReady() == true)
+            val map = Arguments.createMap().apply {
+                putBoolean("isHealthy", isHealthy)
+                putBoolean("isOnPreview", camera?.isOnPreview == true)
+                putBoolean("isStreaming", camera?.isStreaming == true)
+                putBoolean("isSurfaceReady", view?.isSurfaceReady() == true)
             }
             promise.resolve(map)
         }

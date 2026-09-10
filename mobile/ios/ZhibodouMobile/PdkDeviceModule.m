@@ -64,6 +64,28 @@ RCT_EXPORT_METHOD(saveDevConfig:(NSString *)configJson) {
     }
 }
 
+RCT_EXPORT_BLOCKING_SYNCHRONOUS_METHOD(getAuthCredentialsSync) {
+    NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:@"persisted_auth_credentials"];
+    return val ?: @"";
+}
+
+RCT_EXPORT_METHOD(getAuthCredentials:(RCTPromiseResolveBlock)resolve rejecter:(RCTPromiseRejectBlock)reject) {
+    NSString *val = [[NSUserDefaults standardUserDefaults] stringForKey:@"persisted_auth_credentials"];
+    resolve(val ?: @"");
+}
+
+RCT_EXPORT_METHOD(saveAuthCredentials:(NSString *)credentialsJson) {
+    if (credentialsJson) {
+        [[NSUserDefaults standardUserDefaults] setObject:credentialsJson forKey:@"persisted_auth_credentials"];
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    }
+}
+
+RCT_EXPORT_METHOD(clearAuthCredentials) {
+    [[NSUserDefaults standardUserDefaults] removeObjectForKey:@"persisted_auth_credentials"];
+    [[NSUserDefaults standardUserDefaults] synchronize];
+}
+
 + (NSString *)getStableDeviceId {
     static NSString *cachedId = nil;
     static dispatch_once_t onceToken;
