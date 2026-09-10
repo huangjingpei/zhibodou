@@ -3,7 +3,8 @@ import { NativeModules } from 'react-native';
 export interface SavedAuthCredentials {
   phone: string;
   password?: string;
-  rememberPassword: boolean;
+  rememberPassword?: boolean;
+  agreedToTerms?: boolean;
   tokenName?: string;
   tokenValue?: string;
   authMode?: string;

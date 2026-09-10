@@ -193,3 +193,47 @@ test('Video pause / resume state and 10s auto-hide timer contract', () => {
   assert.strictEqual(controlsVisible, true, '点击视频画面后控制栏应重新显示');
 });
 
+test('Auth credentials & agreement persistence contract across restarts', () => {
+  let storedJson = '';
+  const mockStorageModule = {
+    getAuthCredentialsSync() {
+      return storedJson;
+    },
+    saveAuthCredentials(json) {
+      storedJson = json;
+    },
+    clearAuthCredentials() {
+      storedJson = '';
+    },
+  };
+
+  // 1. 用户首次登录勾选服务协议
+  const creds = {
+    phone: '13800138000',
+    password: 'securePassword123',
+    rememberPassword: true,
+    agreedToTerms: true,
+    tokenName: 'satoken',
+    tokenValue: 'mock-token-xyz',
+    lastLoginTime: Date.now(),
+  };
+  mockStorageModule.saveAuthCredentials(JSON.stringify(creds));
+
+  // 2. 模拟应用杀掉重启并读取持久化凭据
+  const restored = JSON.parse(mockStorageModule.getAuthCredentialsSync());
+  assert.strictEqual(restored.phone, '13800138000');
+  assert.strictEqual(restored.password, 'securePassword123');
+  assert.strictEqual(restored.rememberPassword, true);
+  assert.strictEqual(restored.agreedToTerms, true, '已同意协议状态应当在重启后保持');
+
+  // 3. 用户在未登录状态下勾选/取消协议即刻持久化
+  const updatedAgreed = { ...restored, agreedToTerms: false };
+  mockStorageModule.saveAuthCredentials(JSON.stringify(updatedAgreed));
+  const restored2 = JSON.parse(mockStorageModule.getAuthCredentialsSync());
+  assert.strictEqual(restored2.agreedToTerms, false);
+
+  // 4. 用户注销账号彻底清除
+  mockStorageModule.clearAuthCredentials();
+  assert.strictEqual(mockStorageModule.getAuthCredentialsSync(), '');
+});
+

@@ -34,31 +34,32 @@ interface LoginScreenProps {
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
   const initialSaved = authStorageService.getSavedCredentials();
   const [phone, setPhone] = useState(initialSaved?.phone || '13800000000');
-  const [password, setPassword] = useState(
-    initialSaved?.rememberPassword && initialSaved?.password ? initialSaved.password : ''
-  );
-  const [rememberPassword, setRememberPassword] = useState(
-    initialSaved !== null ? initialSaved.rememberPassword : true
-  );
+  const [password, setPassword] = useState(initialSaved?.password || '');
   const [showPassword, setShowPassword] = useState(false);
   const [cardKey, setCardKey] = useState('');
   const [needCardKey, setNeedCardKey] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // 页面载入时：双通道读取原生私有安全沙盒中的账号与“记住密码”状态
+  // 用户服务协议与隐私政策合规状态 (从本地持久化记忆恢复)
+  const [agreedToTerms, setAgreedToTerms] = useState(
+    initialSaved?.agreedToTerms ? true : false
+  );
+  const [agreementModalVisible, setAgreementModalVisible] = useState(false);
+  const [agreementType, setAgreementType] = useState<AgreementType>('TERMS');
+
+  // 页面载入时：双通道读取原生私有安全沙盒中的账号与协议勾选状态
   React.useEffect(() => {
     async function loadSavedCredentials() {
       try {
         const saved = await authStorageService.getSavedCredentialsAsync();
         if (saved) {
           if (saved.phone) setPhone(saved.phone);
-          if (saved.rememberPassword) {
-            setRememberPassword(true);
-            if (saved.password) setPassword(saved.password);
-          } else {
-            setRememberPassword(false);
-            setPassword('');
+          if (saved.password && saved.rememberPassword !== false) {
+            setPassword(saved.password);
+          }
+          if (saved.agreedToTerms !== undefined) {
+            setAgreedToTerms(Boolean(saved.agreedToTerms));
           }
         }
       } catch (e) {
@@ -68,10 +69,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     loadSavedCredentials();
   }, []);
 
-  // 用户服务协议与隐私政策合规状态
-  const [agreedToTerms, setAgreedToTerms] = useState(false);
-  const [agreementModalVisible, setAgreementModalVisible] = useState(false);
-  const [agreementType, setAgreementType] = useState<AgreementType>('TERMS');
+  // 切换并即刻持久化“我已阅读并同意”协议状态
+  const handleToggleAgreed = (newVal: boolean) => {
+    setAgreedToTerms(newVal);
+    const existing = authStorageService.getSavedCredentials() || { phone: phone.trim() };
+    authStorageService.saveCredentials({
+      ...existing,
+      phone: phone.trim() || existing.phone,
+      agreedToTerms: newVal,
+    });
+  };
 
   // 连续轻点 Logo 6 次开启高级网络设置
   const [tapCount, setTapCount] = useState(0);
@@ -119,8 +126,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     if (devSettingsService.isDirectRtmp()) {
       authStorageService.saveCredentials({
         phone: phone.trim() || '13800000000',
-        password: rememberPassword ? password : '',
-        rememberPassword: rememberPassword,
+        password: password.trim(),
+        rememberPassword: true,
+        agreedToTerms: true,
         authMode: 'DIRECT_RTMP',
         lastLoginTime: Date.now(),
       });
@@ -152,11 +160,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
     setIsLoading(true);
     try {
       const res = await pdkClient.login(targetPhone, targetPassword, cardKey);
-      // 登录成功：根据“记住密码”状态持久化到原生私有沙盒存储
+      // 登录成功：静默持久化账号、密码及协议同意状态，方便下次免手动输入
       authStorageService.saveCredentials({
         phone: targetPhone,
-        password: rememberPassword ? targetPassword : '',
-        rememberPassword: rememberPassword,
+        password: targetPassword,
+        rememberPassword: true,
+        agreedToTerms: true,
         tokenName: res.tokenName,
         tokenValue: res.tokenValue,
         lastLoginTime: Date.now(),
@@ -256,25 +265,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
             </View>
           </View>
 
-          {/* 记住密码勾选选项 (合规自愿选择) */}
-          <View style={styles.rememberRow}>
-            <TouchableOpacity
-              style={styles.checkboxTouch}
-              onPress={() => setRememberPassword(!rememberPassword)}
-              activeOpacity={0.7}
-            >
-              <View style={[styles.checkbox, rememberPassword && styles.checkboxChecked]}>
-                {rememberPassword && <Text style={styles.checkboxCheckmark}>✓</Text>}
-              </View>
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={() => setRememberPassword(!rememberPassword)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.rememberText}>记住密码（下次免手动输入）</Text>
-            </TouchableOpacity>
-          </View>
-
           {/* 新设备首次接入席位授权码输入区 (40380 自动触发) */}
           {needCardKey && (
             <View style={[styles.inputGroup, styles.cardKeyHighlight]}>
@@ -299,11 +289,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
             <Text style={styles.deviceValue}>{deviceId}</Text>
           </View>
 
-          {/* 隐私政策与服务协议勾选合规区 */}
+          {/* 隐私政策与服务协议勾选合规区 (支持持久化记忆勾选状态) */}
           <View style={styles.agreementRow}>
             <TouchableOpacity
               style={styles.checkboxTouch}
-              onPress={() => setAgreedToTerms(!agreedToTerms)}
+              onPress={() => handleToggleAgreed(!agreedToTerms)}
               activeOpacity={0.7}
             >
               <View style={[styles.checkbox, agreedToTerms && styles.checkboxChecked]}>
@@ -311,7 +301,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               </View>
             </TouchableOpacity>
             <View style={styles.agreementTextWrapper}>
-              <Text style={styles.agreementLabel}>我已阅读并同意</Text>
+              <TouchableOpacity
+                onPress={() => handleToggleAgreed(!agreedToTerms)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.agreementLabel}>我已阅读并同意</Text>
+              </TouchableOpacity>
               <TouchableOpacity
                 onPress={() => {
                   setAgreementType('TERMS');
@@ -371,7 +366,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
         type={agreementType}
         onClose={() => setAgreementModalVisible(false)}
         onAccept={() => {
-          setAgreedToTerms(true);
+          handleToggleAgreed(true);
           setAgreementModalVisible(false);
         }}
       />
@@ -501,18 +496,6 @@ const styles = StyleSheet.create({
   },
   eyeBtnText: {
     fontSize: 18,
-  },
-  rememberRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: Spacing.sm,
-    marginTop: 2,
-  },
-  rememberText: {
-    ...Typography.bodySmall,
-    color: Colors.textSecondary,
-    fontSize: 12,
-    fontWeight: '500',
   },
   cardKeyHighlight: {
     backgroundColor: 'rgba(245, 158, 11, 0.08)',
