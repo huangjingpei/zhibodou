@@ -20,6 +20,7 @@ import { DevModeModal } from '../components/DevModeModal';
 import { devSettingsService } from '../services/devSettingsService';
 import { AgreementModal, AgreementType } from '../components/AgreementModal';
 import { authStorageService } from '../services/authStorageService';
+import { APP_VERSION_CONFIG } from '../config/appVersion';
 
 interface LoginScreenProps {
   onLoginSuccess: (result: LoginResult) => void;
@@ -343,6 +344,16 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
             )}
           </TouchableOpacity>
         </View>
+
+        {/* 软件版本、编译时间与版权所属备案展示 */}
+        <View style={styles.footerContainer}>
+          <Text style={styles.footerVersionText}>
+            {APP_VERSION_CONFIG.appBrand} {APP_VERSION_CONFIG.version} (Build {APP_VERSION_CONFIG.buildNumber}) · 编译时间 {APP_VERSION_CONFIG.buildTime}
+          </Text>
+          <Text style={styles.footerCopyrightText}>
+            版权所属：{APP_VERSION_CONFIG.copyright} · 保留所有权利
+          </Text>
+        </View>
       </ScrollView>
 
       {/* 高级网络与流媒体设置弹窗 */}
@@ -607,5 +618,21 @@ const styles = StyleSheet.create({
     ...Typography.h3,
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  footerContainer: {
+    alignItems: 'center',
+    marginTop: Spacing.xl,
+    paddingBottom: Spacing.lg,
+  },
+  footerVersionText: {
+    ...Typography.bodySmall,
+    color: Colors.textMuted,
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  footerCopyrightText: {
+    ...Typography.bodySmall,
+    color: Colors.textMuted,
+    fontSize: 11,
   },
 });

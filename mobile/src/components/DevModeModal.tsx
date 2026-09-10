@@ -12,6 +12,7 @@ import {
 import { Colors } from '../theme/colors';
 import { Typography, Radius, Spacing } from '../theme/typography';
 import { devSettingsService } from '../services/devSettingsService';
+import { APP_VERSION_CONFIG } from '../config/appVersion';
 
 interface DevModeModalProps {
   visible: boolean;
@@ -168,6 +169,39 @@ export const DevModeModal: React.FC<DevModeModalProps> = ({
                     <Text style={styles.presetChipText}>⚡ 填入本机局域网 RTMP 测试地址</Text>
                   </TouchableOpacity>
                 )}
+              </View>
+            </View>
+
+            {/* 3. 软件版本与编译构建信息 (写死在代码中) */}
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>软件版本与构建信息</Text>
+              <View style={styles.versionBox}>
+                <View style={styles.versionRow}>
+                  <Text style={styles.versionLabel}>软件名称</Text>
+                  <Text style={styles.versionVal}>{APP_VERSION_CONFIG.appName}</Text>
+                </View>
+                <View style={styles.versionRow}>
+                  <Text style={styles.versionLabel}>软件版本号</Text>
+                  <Text style={styles.versionValBold}>
+                    {APP_VERSION_CONFIG.version} (Build {APP_VERSION_CONFIG.buildNumber})
+                  </Text>
+                </View>
+                <View style={styles.versionRow}>
+                  <Text style={styles.versionLabel}>编译构建时间</Text>
+                  <Text style={styles.versionVal}>{APP_VERSION_CONFIG.buildTime}</Text>
+                </View>
+                <View style={styles.versionRow}>
+                  <Text style={styles.versionLabel}>版权所属</Text>
+                  <Text style={styles.versionValHighlight}>{APP_VERSION_CONFIG.copyright}</Text>
+                </View>
+                <View style={styles.versionRow}>
+                  <Text style={styles.versionLabel}>官方主页</Text>
+                  <Text style={styles.versionVal}>{APP_VERSION_CONFIG.officialWebsite}</Text>
+                </View>
+                <View style={styles.versionRow}>
+                  <Text style={styles.versionLabel}>构建环境</Text>
+                  <Text style={styles.versionVal}>{APP_VERSION_CONFIG.buildType}</Text>
+                </View>
               </View>
             </View>
 
@@ -413,5 +447,36 @@ const styles = StyleSheet.create({
     ...Typography.h3,
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  versionBox: {
+    backgroundColor: Colors.surfaceSubtle,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Colors.borderSubtle,
+    padding: Spacing.md,
+  },
+  versionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 5,
+  },
+  versionLabel: {
+    ...Typography.bodySmall,
+    color: Colors.textSecondary,
+  },
+  versionVal: {
+    ...Typography.bodySmall,
+    color: Colors.textPrimary,
+  },
+  versionValBold: {
+    ...Typography.bodySmall,
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  versionValHighlight: {
+    ...Typography.bodySmall,
+    color: Colors.primary,
+    fontWeight: '600',
   },
 });

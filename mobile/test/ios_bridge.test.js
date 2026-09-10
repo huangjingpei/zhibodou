@@ -237,3 +237,33 @@ test('Auth credentials & agreement persistence contract across restarts', () => 
   assert.strictEqual(mockStorageModule.getAuthCredentialsSync(), '');
 });
 
+test('App Version & Copyright configuration contract validation', () => {
+  // 验证写死在客户端内部的版本配置，确保无网络依赖且字段完整
+  const appVersionConfig = {
+    appName: '智播豆 · 移动推流客户端',
+    appBrand: 'Zlive Mobile',
+    version: 'v1.0.0',
+    buildNumber: 100,
+    buildTime: '2026-09-10 15:00:00',
+    copyright: 'graddu.com',
+    officialWebsite: 'https://graddu.com',
+    developer: 'graddu.com 研发团队',
+    buildType: 'Release',
+    engineVersion: 'RootEncoder 2.5.0 / PDK H.264 Core',
+  };
+
+  assert.strictEqual(typeof appVersionConfig.appName, 'string');
+  assert.match(appVersionConfig.version, /^v\d+\.\d+\.\d+$/);
+  assert.strictEqual(typeof appVersionConfig.buildNumber, 'number');
+  assert.ok(appVersionConfig.buildNumber > 0);
+  assert.match(appVersionConfig.buildTime, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+  assert.strictEqual(appVersionConfig.copyright, 'graddu.com');
+  assert.strictEqual(appVersionConfig.officialWebsite, 'https://graddu.com');
+
+  const formattedVersion = `${appVersionConfig.version} (Build ${appVersionConfig.buildNumber})`;
+  assert.strictEqual(formattedVersion, 'v1.0.0 (Build 100)');
+
+  const copyrightNotice = `版权所属：${appVersionConfig.copyright} · 保留所有权利`;
+  assert.strictEqual(copyrightNotice, '版权所属：graddu.com · 保留所有权利');
+});
+

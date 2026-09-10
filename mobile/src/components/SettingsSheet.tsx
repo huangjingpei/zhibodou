@@ -10,6 +10,7 @@ import {
 import { Colors } from '../theme/colors';
 import { Typography, Radius, Spacing } from '../theme/typography';
 import { PdkEnv, VideoAudioSettings, VideoResolutionPreset } from '../api/types';
+import { APP_VERSION_CONFIG } from '../config/appVersion';
 
 export const RESOLUTION_PRESETS: VideoResolutionPreset[] = [
   { id: '1080p', name: '1080P 超清', width: 1080, height: 1920, label: '1080P' },
@@ -135,7 +136,17 @@ export const SettingsSheet: React.FC<SettingsSheetProps> = ({
               </View>
             </View>
 
-            <View style={{ height: 40 }} />
+            {/* 软件版本与版权备案落款 */}
+            <View style={styles.versionFooter}>
+              <Text style={styles.versionFooterText}>
+                {APP_VERSION_CONFIG.appBrand} {APP_VERSION_CONFIG.version} · 编译时间 {APP_VERSION_CONFIG.buildTime}
+              </Text>
+              <Text style={styles.copyrightFooterText}>
+                版权所属：{APP_VERSION_CONFIG.copyright}
+              </Text>
+            </View>
+
+            <View style={{ height: 30 }} />
           </ScrollView>
         </View>
       </View>
@@ -264,5 +275,23 @@ const styles = StyleSheet.create({
   chipTextActiveYellow: {
     color: Colors.warningYellow,
     fontWeight: '700',
+  },
+  versionFooter: {
+    alignItems: 'center',
+    marginTop: Spacing.lg,
+    paddingTop: Spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: Colors.divider,
+  },
+  versionFooterText: {
+    ...Typography.bodySmall,
+    color: Colors.textMuted,
+    fontSize: 11,
+    marginBottom: 3,
+  },
+  copyrightFooterText: {
+    ...Typography.bodySmall,
+    color: Colors.textMuted,
+    fontSize: 11,
   },
 });

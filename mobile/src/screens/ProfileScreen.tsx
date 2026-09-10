@@ -16,6 +16,7 @@ import { deviceService } from '../services/deviceService';
 import { DeviceLicense, LoginResult, UserProfile } from '../api/types';
 import { AgreementModal, AgreementType } from '../components/AgreementModal';
 import { authStorageService } from '../services/authStorageService';
+import { APP_VERSION_CONFIG } from '../config/appVersion';
 
 interface ProfileScreenProps {
   loginResult: LoginResult;
@@ -292,7 +293,58 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </View>
             </View>
 
-            {/* 5. 席位操作与账号管理 */}
+            {/* 5. 软件版本与版权信息 (本地静态配置，发版只需修改 appVersion.ts) */}
+            <View style={styles.card}>
+              <View style={styles.versionHeaderRow}>
+                <Text style={styles.cardHeader}>ℹ️ 软件版本与版权信息</Text>
+                <View style={styles.buildTypeBadge}>
+                  <Text style={styles.buildTypeBadgeText}>{APP_VERSION_CONFIG.buildType}</Text>
+                </View>
+              </View>
+
+              <View style={styles.itemRow}>
+                <Text style={styles.itemLabel}>软件全称</Text>
+                <Text style={styles.itemValue}>{APP_VERSION_CONFIG.appName}</Text>
+              </View>
+
+              <View style={styles.itemRow}>
+                <Text style={styles.itemLabel}>软件版本号</Text>
+                <Text style={[styles.itemValue, styles.highlightVersion]}>
+                  {APP_VERSION_CONFIG.version} (Build {APP_VERSION_CONFIG.buildNumber})
+                </Text>
+              </View>
+
+              <View style={styles.itemRow}>
+                <Text style={styles.itemLabel}>编译时间</Text>
+                <Text style={styles.itemValue}>{APP_VERSION_CONFIG.buildTime}</Text>
+              </View>
+
+              <View style={styles.itemRow}>
+                <Text style={styles.itemLabel}>版权所属</Text>
+                <Text style={[styles.itemValue, styles.copyrightValue]}>
+                  {APP_VERSION_CONFIG.copyright}
+                </Text>
+              </View>
+
+              <View style={styles.itemRow}>
+                <Text style={styles.itemLabel}>官方主页</Text>
+                <Text style={styles.itemValue}>{APP_VERSION_CONFIG.officialWebsite}</Text>
+              </View>
+
+              <View style={styles.itemRow}>
+                <Text style={styles.itemLabel}>核心引擎</Text>
+                <Text style={styles.itemValue}>{APP_VERSION_CONFIG.engineVersion}</Text>
+              </View>
+
+              <View style={styles.divider} />
+
+              <View style={styles.itemCol}>
+                <Text style={styles.itemLabel}>版本更新摘要</Text>
+                <Text style={styles.releaseNotesText}>{APP_VERSION_CONFIG.releaseNotes}</Text>
+              </View>
+            </View>
+
+            {/* 6. 席位操作与账号管理 */}
             <View style={styles.actionSection}>
               <TouchableOpacity
                 style={styles.unbindBtn}
@@ -319,7 +371,17 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({
               </TouchableOpacity>
             </View>
 
-            <View style={{ height: 30 }} />
+            {/* 底部版权所属与编译时间备案落款 */}
+            <View style={styles.footerContainer}>
+              <Text style={styles.footerVersionText}>
+                {APP_VERSION_CONFIG.appBrand} {APP_VERSION_CONFIG.version} · 编译构建于 {APP_VERSION_CONFIG.buildTime}
+              </Text>
+              <Text style={styles.footerCopyrightText}>
+                版权所属：{APP_VERSION_CONFIG.copyright} · 保留所有权利
+              </Text>
+            </View>
+
+            <View style={{ height: 20 }} />
           </>
         )}
       </ScrollView>
@@ -562,5 +624,54 @@ const styles = StyleSheet.create({
     color: Colors.liveRed,
     fontWeight: '600',
     fontSize: 13,
+  },
+  versionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Spacing.md,
+  },
+  buildTypeBadge: {
+    backgroundColor: 'rgba(59, 130, 246, 0.15)',
+    borderWidth: 1,
+    borderColor: Colors.primary,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: Radius.sm,
+  },
+  buildTypeBadgeText: {
+    ...Typography.badge,
+    color: Colors.primary,
+    fontSize: 10,
+  },
+  highlightVersion: {
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  copyrightValue: {
+    color: Colors.primary,
+    fontWeight: '700',
+  },
+  releaseNotesText: {
+    ...Typography.bodySmall,
+    color: Colors.textSecondary,
+    marginTop: 4,
+    lineHeight: 18,
+  },
+  footerContainer: {
+    alignItems: 'center',
+    marginTop: Spacing.md,
+    marginBottom: Spacing.xl,
+  },
+  footerVersionText: {
+    ...Typography.bodySmall,
+    color: Colors.textMuted,
+    fontSize: 11,
+    marginBottom: 4,
+  },
+  footerCopyrightText: {
+    ...Typography.bodySmall,
+    color: Colors.textMuted,
+    fontSize: 11,
   },
 });
