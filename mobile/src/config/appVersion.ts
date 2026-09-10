@@ -44,15 +44,15 @@ export interface AppVersionConfig {
 export const APP_VERSION_CONFIG: AppVersionConfig = {
   appName: '智播豆 · 移动推流客户端',
   appBrand: 'Zlive Mobile',
-  version: 'v1.0.0',
-  buildNumber: 100,
-  buildTime: '2026-09-10 15:00:00',
+  version: 'v1.0.1',
+  buildNumber: 101,
+  buildTime: '2026-09-10 15:40:00',
   copyright: 'graddu.com',
   officialWebsite: 'https://graddu.com',
   developer: 'graddu.com 研发团队',
   buildType: 'Release',
   engineVersion: 'RootEncoder 2.5.0 / PDK H.264 Core',
-  releaseNotes: '支持双平台高清硬件编码推流、TEE硬件指纹设备绑定、网络自适应与沙盒凭据记忆',
+  releaseNotes: '升级Android全套自适应桌面图标与前台层、优化Z字重心平衡、胶囊导航与矢量显隐组件',
 };
 
 /**

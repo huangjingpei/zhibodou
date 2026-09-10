@@ -1,6 +1,6 @@
 {
   "name": "zhibodou-mobile",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "智播豆移动端 - 现代化跨平台音视频推流客户端 (Android & iOS)",
   "scripts": {
