@@ -93,13 +93,13 @@ class PdkDeviceModule(private val reactContext: ReactApplicationContext) :
     @ReactMethod
     fun saveAuthCredentials(credentialsJson: String) {
         val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().putString(KEY_AUTH_CREDENTIALS, credentialsJson).apply()
+        prefs.edit().putString(KEY_AUTH_CREDENTIALS, credentialsJson).commit()
     }
 
     @ReactMethod
     fun clearAuthCredentials() {
         val prefs = reactContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.edit().remove(KEY_AUTH_CREDENTIALS).apply()
+        prefs.edit().remove(KEY_AUTH_CREDENTIALS).commit()
     }
 
     companion object {

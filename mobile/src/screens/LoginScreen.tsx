@@ -32,31 +32,40 @@ interface LoginScreenProps {
  * 支持“记住密码”安全沙盒持久化，提升日常推流工作便利性
  */
 export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
-  const [phone, setPhone] = useState('13800000000');
-  const [password, setPassword] = useState('123456');
-  const [rememberPassword, setRememberPassword] = useState(true);
+  const initialSaved = authStorageService.getSavedCredentials();
+  const [phone, setPhone] = useState(initialSaved?.phone || '13800000000');
+  const [password, setPassword] = useState(
+    initialSaved?.rememberPassword && initialSaved?.password ? initialSaved.password : ''
+  );
+  const [rememberPassword, setRememberPassword] = useState(
+    initialSaved !== null ? initialSaved.rememberPassword : true
+  );
   const [showPassword, setShowPassword] = useState(false);
   const [cardKey, setCardKey] = useState('');
   const [needCardKey, setNeedCardKey] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
 
-  // 页面载入时：自动从原生私有安全沙盒读取上次保存的账号与“记住密码”状态
+  // 页面载入时：双通道读取原生私有安全沙盒中的账号与“记住密码”状态
   React.useEffect(() => {
-    try {
-      const saved = authStorageService.getSavedCredentials();
-      if (saved) {
-        if (saved.phone) setPhone(saved.phone);
-        if (saved.rememberPassword) {
-          setRememberPassword(true);
-          if (saved.password) setPassword(saved.password);
-        } else {
-          setRememberPassword(false);
+    async function loadSavedCredentials() {
+      try {
+        const saved = await authStorageService.getSavedCredentialsAsync();
+        if (saved) {
+          if (saved.phone) setPhone(saved.phone);
+          if (saved.rememberPassword) {
+            setRememberPassword(true);
+            if (saved.password) setPassword(saved.password);
+          } else {
+            setRememberPassword(false);
+            setPassword('');
+          }
         }
+      } catch (e) {
+        console.warn('[LoginScreen] 读取本地保存凭据异常:', e);
       }
-    } catch (e) {
-      console.warn('[LoginScreen] 读取本地保存凭据异常:', e);
     }
+    loadSavedCredentials();
   }, []);
 
   // 用户服务协议与隐私政策合规状态
@@ -124,11 +133,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
       return;
     }
 
-    if (!phone.trim()) {
+    const targetPhone = phone.trim();
+    const targetPassword = password.trim();
+
+    if (!targetPhone) {
       setErrorMessage('请输入注册手机号');
       return;
     }
-    if (!password.trim()) {
+    if (!targetPassword) {
       setErrorMessage('请输入登录密码');
       return;
     }
@@ -139,11 +151,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
 
     setIsLoading(true);
     try {
-      const res = await pdkClient.login(phone, password, cardKey);
+      const res = await pdkClient.login(targetPhone, targetPassword, cardKey);
       // 登录成功：根据“记住密码”状态持久化到原生私有沙盒存储
       authStorageService.saveCredentials({
-        phone: phone.trim(),
-        password: rememberPassword ? password : '',
+        phone: targetPhone,
+        password: rememberPassword ? targetPassword : '',
         rememberPassword: rememberPassword,
         tokenName: res.tokenName,
         tokenValue: res.tokenValue,
