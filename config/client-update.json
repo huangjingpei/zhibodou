@@ -14,9 +14,9 @@
   "serverBaseUrl": "http://127.0.0.1:8080",
   "healthTimeoutSeconds": 45,
   "artifactPublicKeys": {
-    "client-release-2026-01": "MCowBQYDK2VwAyEAxEKE2sxYw8qd6gBCbweN4kUQS0ghHguFB7JxHhpW448="
+    "client-release-2026-01": "MCowBQYDK2VwAyEAdkohm7YO9wdg+R0VG7wBKaCFcku9oTQuo6iZU3cXQQM="
   },
   "policyPublicKeys": {
-    "client-policy-2026-01": "MCowBQYDK2VwAyEA6mw6wTWBaKcQkv4BkDbD/dBaYJbWjOMJRAT7pn3aIEo="
+    "client-policy-2026-01": "MCowBQYDK2VwAyEAYRFQlsRCiOoHTGURxnkDY35OtGNV5r53IhSybIN5s84="
   }
 }

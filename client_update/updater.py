@@ -63,12 +63,31 @@ def report(event: str, error: str | None = None) -> None:
         pass
 
 
+def _is_process_alive(pid: int) -> bool:
+    """Windows 下判断进程是否仍在运行，避免 os.kill(pid, 0) 的 WinError 6 问题。"""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    STILL_ACTIVE = 259
+
+    h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not h:
+        return False
+    try:
+        exit_code = wintypes.DWORD()
+        if kernel32.GetExitCodeProcess(h, ctypes.byref(exit_code)):
+            return exit_code.value == STILL_ACTIVE
+        return False
+    finally:
+        kernel32.CloseHandle(h)
+
+
 def wait_for_parent(pid: int, timeout: int = 90) -> bool:
     deadline = time.time() + timeout
     while time.time() < deadline:
-        try:
-            os.kill(pid, 0)
-        except OSError:
+        if not _is_process_alive(pid):
             return True
         time.sleep(0.5)
     return False
