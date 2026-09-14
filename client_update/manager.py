@@ -101,7 +101,9 @@ class ClientUpdateManager:
         if existing > expected_size:
             target.unlink(missing_ok=True)
             existing = 0
-        headers = {"Range": f"bytes={existing}-"} if existing else {}
+        # 只有本地确实有未完成的中间文件时才发 Range；等于或超过预期大小时从头下载，
+        # 避免发送 bytes={expected_size}- 这种越界 Range 导致服务端返回 416。
+        headers = {"Range": f"bytes={existing}-"} if 0 < existing < expected_size else {}
         self.api.report(decision, "DOWNLOAD_STARTED")
         try:
             with requests.get(url, headers=headers, stream=True, timeout=(10, 60)) as response:
@@ -112,9 +114,14 @@ class ClientUpdateManager:
                         raise UpdateError("下载链接过期且服务端升级目标已经改变，请重新确认升级")
                     return self._download(refreshed, progress, allow_refresh=False)
                 if existing and response.status_code != 206:
+                    # 断点续传未被 206 接受（如 416 Range 不合法、服务端忽略 Range 返回 200），
+                    # 丢弃本地部分文件并重新全量下载。
                     target.unlink(missing_ok=True)
                     existing = 0
                     if response.status_code == 200:
+                        # 服务端已返回完整内容，直接按全量写入本次响应即可
+                        pass
+                    else:
                         return self._download(decision, progress, allow_refresh=False)
                 response.raise_for_status()
                 done = existing
