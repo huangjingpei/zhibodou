@@ -112,6 +112,93 @@ def wait_for_parent(pid: int, timeout: int = 90) -> bool:
     return False
 
 
+def _kill_process_tree(root_pid: int) -> None:
+    """递归强杀 root_pid 的整个进程树（含已孤儿化的子孙），释放其占用的文件句柄。
+
+    升级器自身（及它的子孙）必须排除，否则会自杀。父进程（主程序）退出后，
+    它派生的子进程（ffmpeg / scrcpy / ADB / OBS 等）往往仍存活并持有 install_root
+    内的文件句柄，导致目录级重命名被 Windows 以 WinError 32（共享冲突）拒绝。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    TH32CS_SNAPPROCESS = 0x00000002
+    PROCESS_TERMINATE = 0x0001
+    self_pid = os.getpid()
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", ctypes.c_char * 260),
+        ]
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+    # INVALID_HANDLE_VALUE == (HANDLE)(-1)；ctypes 返回无符号大整数，用掩码判断
+    if (snapshot & 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFF:
+        return
+    try:
+        entry = PROCESSENTRY32()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        children: dict[int, list[int]] = {}
+        if kernel32.Process32First(snapshot, ctypes.byref(entry)):
+            while True:
+                children.setdefault(entry.th32ParentProcessID, []).append(entry.th32ProcessID)
+                if not kernel32.Process32Next(snapshot, ctypes.byref(entry)):
+                    break
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+    def descendants(pid: int) -> set[int]:
+        out: set[int] = set()
+        queue = [pid]
+        while queue:
+            p = queue.pop()
+            for c in children.get(p, []):
+                if c not in out:
+                    out.add(c)
+                    queue.append(c)
+        return out
+
+    protected = descendants(self_pid)  # 升级器自身及其子孙，绝不能杀
+    to_kill = sorted((descendants(root_pid) | {root_pid}) - protected)
+    killed = 0
+    for pid in to_kill:
+        try:
+            h = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+            if not h:
+                continue
+            kernel32.TerminateProcess(h, 1)
+            kernel32.CloseHandle(h)
+            killed += 1
+        except Exception:
+            pass
+    log(f"已尝试清理父进程树：root={root_pid} 待结束={len(to_kill)} 已结束={killed}")
+
+
+def _robust_replace(src: Path, dst: Path, label: str, tries: int = 6) -> None:
+    """带退避重试的目录/文件原子替换，缓解杀软瞬时锁或句柄释放延迟。"""
+    last: OSError | None = None
+    for attempt in range(1, tries + 1):
+        try:
+            src.replace(dst)
+            return
+        except OSError as exc:
+            last = exc
+            log(f"{label} 第 {attempt}/{tries} 次失败：{exc}")
+            if attempt < tries:
+                time.sleep(0.8 * attempt)
+    raise last
+
+
 def verify_package(args: argparse.Namespace) -> None:
     package = Path(args.package)
     if not package.is_file() or package.stat().st_size != args.file_size:
@@ -213,8 +300,8 @@ def rollback(install_root: Path, backup: Path, failed_root: Path,
              entry_point: str) -> None:
     try:
         if install_root.exists():
-            install_root.replace(failed_root)
-        backup.replace(install_root)
+            _robust_replace(install_root, failed_root, "回滚：当前版本移入 failed", tries=3)
+        _robust_replace(backup, install_root, "回滚：备份恢复为当前版本", tries=3)
         old_entry = install_root.joinpath(*PurePosixPath(entry_point).parts)
         if old_entry.is_file():
             subprocess.Popen([str(old_entry)], cwd=install_root,
@@ -231,10 +318,12 @@ def install(args: argparse.Namespace) -> int:
         report("INSTALL_FAILED", "SIGNATURE_INVALID")
         log("验签/校验失败：" + str(exc))
         fail(str(exc))
-    log("验签通过，等待父进程退出")
-    if not wait_for_parent(args.parent_pid):
-        report("INSTALL_FAILED", "MAIN_PROCESS_NOT_EXITED")
-        fail("主程序未在 90 秒内退出，安装尚未执行")
+        log("验签通过，清理父进程及其子进程占用后等待父进程退出")
+        _kill_process_tree(args.parent_pid)
+        time.sleep(0.3)  # 给 Windows 一点时间释放句柄
+        if not wait_for_parent(args.parent_pid):
+            report("INSTALL_FAILED", "MAIN_PROCESS_NOT_EXITED")
+            fail("主程序未在 90 秒内退出，安装尚未执行")
 
     install_root = Path(args.install_root).resolve()
     parent = install_root.parent
@@ -250,15 +339,19 @@ def install(args: argparse.Namespace) -> int:
             fail("安全解压后找不到新版入口")
         log(f"解压完成，准备原子替换 install_root={install_root}")
         try:
-            install_root.replace(backup)
+            _robust_replace(install_root, backup, "备份失败（install_root.replace）")
         except OSError as exc:
-            log(f"备份失败（install_root.replace）：{exc}")
-            raise
+            report("INSTALL_FAILED", "BACKUP_LOCKED")
+            fail(f"无法备份当前版本（目录被占用，WinError 32）：{exc}。"
+                 f"请关闭所有可能正在使用该目录的程序（文件资源管理器窗口、媒体/推流子进程等）后重试。", 5)
         try:
-            stage.replace(install_root)
+            _robust_replace(stage, install_root, "切换失败（stage.replace）")
         except Exception as exc:
             log(f"切换失败（stage.replace）：{exc}")
-            backup.replace(install_root)
+            try:
+                _robust_replace(backup, install_root, "回滚失败（backup.replace）", tries=2)
+            except Exception:
+                pass
             raise
         log("目录已切换到新版本，启动新版入口做健康检查")
         process = launch_entry(install_root, args.entry_point, health_file, args.health_nonce)
@@ -288,7 +381,10 @@ def install(args: argparse.Namespace) -> int:
         log("安装异常：" + "".join(traceback.format_exception_only(type(exc), exc)).strip())
         report("INSTALL_FAILED", "INSTALL_EXCEPTION")
         if backup.exists() and not install_root.exists():
-            backup.replace(install_root)
+            try:
+                _robust_replace(backup, install_root, "异常回滚（backup.replace）", tries=3)
+            except Exception:
+                pass
         fail(str(exc), 4)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
