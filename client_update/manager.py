@@ -103,7 +103,10 @@ class ClientUpdateManager:
             existing = 0
         # 只有本地确实有未完成的中间文件时才发 Range；等于或超过预期大小时从头下载，
         # 避免发送 bytes={expected_size}- 这种越界 Range 导致服务端返回 416。
-        headers = {"Range": f"bytes={existing}-"} if 0 < existing < expected_size else {}
+        if existing == expected_size:
+            # 本地文件已经完整，跳过下载直接校验
+            return self._verify_artifact(target, decision)
+        headers = {"Range": f"bytes={existing}-"} if existing else {}
         self.api.report(decision, "DOWNLOAD_STARTED")
         try:
             with requests.get(url, headers=headers, stream=True, timeout=(10, 60)) as response:
@@ -137,6 +140,11 @@ class ClientUpdateManager:
         except requests.RequestException as exc:
             raise UpdateError(f"升级包下载失败，可稍后断点续传：{exc}") from exc
 
+        return self._verify_artifact(target, decision)
+
+    def _verify_artifact(self, target: Path, decision: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+        artifact = decision.get("artifact") or {}
+        expected_size = int(artifact.get("fileSize") or 0)
         if not target.is_file() or target.stat().st_size != expected_size:
             raise UpdateError("升级包大小不一致，已保留部分文件供下次断点续传")
         self.api.report(decision, "DOWNLOAD_COMPLETED")
