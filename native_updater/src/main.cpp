@@ -48,15 +48,13 @@ void remove_tree(const std::filesystem::path& path) noexcept {
     std::filesystem::remove_all(path, ignored);
 }
 
-void rename_checked(const std::filesystem::path& from, const std::filesystem::path& to,
-                    const char* operation) {
-    std::error_code error;
-    std::filesystem::rename(from, to, error);
-    if (error) throw pdk::UpdateError(std::string(operation) + ": " + error.message());
-}
-
 int run_update(const pdk::UpdateJob& job) {
+    pdk::log_line("开始安装 install_root=" + pdk::path_to_utf8(job.install_root) +
+                  " target=" + job.target_version + " parent_pid=" + std::to_string(job.parent_pid));
     pdk::verify_job_artifact(job);
+    pdk::log_line("包体 SHA-256 与 Ed25519 验签通过");
+    pdk::report_event(job, "INSTALL_STARTED");
+    pdk::kill_process_tree(job.parent_pid);
     if (!pdk::wait_for_process_exit(job.parent_pid, 90)) {
         pdk::report_event(job, "INSTALL_FAILED", "MAIN_PROCESS_NOT_EXITED");
         throw pdk::UpdateError("parent client did not exit within 90 seconds", 65);
@@ -72,15 +70,12 @@ int run_update(const pdk::UpdateJob& job) {
     std::error_code ignored;
     std::filesystem::remove(job.health_file, ignored);
 
-    bool old_moved = false;
-    bool new_installed = false;
     try {
         std::filesystem::create_directories(stage);
         pdk::validate_and_extract(job, stage);
-        rename_checked(job.install_root, backup, "cannot move current install to backup");
-        old_moved = true;
-        rename_checked(stage, job.install_root, "cannot activate staged install");
-        new_installed = true;
+        const auto strategy = pdk::switch_to_new_version(job.install_root, stage, backup);
+        pdk::log_line(std::string("版本替换完成（策略=") +
+                      (strategy == pdk::SwitchStrategy::Atomic ? "atomic" : "inplace") + "），启动新版入口做健康检查");
         auto process = pdk::launch_client(job.install_root, job.entry_point,
                                           &job.health_file, &job.health_nonce);
         if (pdk::wait_for_health(process, job)) {
@@ -88,36 +83,41 @@ int run_update(const pdk::UpdateJob& job) {
             if (process.hProcess) CloseHandle(process.hProcess);
             pdk::report_event(job, "INSTALL_SUCCEEDED");
             remove_tree(backup);
+            remove_tree(stage);
             std::filesystem::remove(job.health_file, ignored);
+            pdk::log_line("升级到 " + job.target_version + " 成功");
             return 0;
         }
         pdk::terminate_process(process);
-        rename_checked(job.install_root, failed, "cannot quarantine failed new install");
-        new_installed = false;
-        rename_checked(backup, job.install_root, "cannot restore previous install");
-        old_moved = false;
+        pdk::log_line("健康检查未通过，准备回滚");
+        if (strategy == pdk::SwitchStrategy::InPlace) {
+            pdk::sync_tree(backup, job.install_root, "回滚");
+            remove_tree(backup);
+        } else {
+            pdk::rename_with_retry(job.install_root, failed, "cannot quarantine failed new install", 3);
+            pdk::rename_with_retry(backup, job.install_root, "cannot restore previous install", 3);
+            remove_tree(failed);
+        }
         if (job.relaunch_on_rollback) {
             auto old_process = pdk::launch_client(job.install_root, job.entry_point, nullptr, nullptr);
             if (old_process.hThread) CloseHandle(old_process.hThread);
             if (old_process.hProcess) CloseHandle(old_process.hProcess);
         }
-        remove_tree(failed);
         pdk::report_event(job, "INSTALL_FAILED", "HEALTH_CHECK_FAILED");
         throw pdk::UpdateError("new client failed health check; previous version restored", 70);
     } catch (...) {
         remove_tree(stage);
-        if (old_moved) {
-            try {
-                if (new_installed && std::filesystem::exists(job.install_root)) {
-                    rename_checked(job.install_root, failed, "cannot quarantine incomplete install");
-                }
-                if (!std::filesystem::exists(job.install_root) && std::filesystem::exists(backup)) {
-                    rename_checked(backup, job.install_root, "cannot recover current install");
-                }
-                remove_tree(failed);
-            } catch (...) {
-                // 保留 backup/failed 目录供人工恢复，不覆盖原始异常。
+        // 异常回滚：备份里有旧版本内容就就地恢复，覆盖原子替换走到任何一步的情况。
+        try {
+            std::error_code backup_error;
+            if (std::filesystem::exists(backup) && !std::filesystem::is_empty(backup, backup_error)) {
+                pdk::sync_tree(backup, job.install_root, "异常回滚");
+            } else if (!std::filesystem::exists(job.install_root) && std::filesystem::exists(backup)) {
+                pdk::rename_with_retry(backup, job.install_root, "cannot recover current install", 3);
             }
+            remove_tree(failed);
+        } catch (...) {
+            // 保留 backup/failed 目录供人工恢复，不覆盖原始异常。
         }
         throw;
     }

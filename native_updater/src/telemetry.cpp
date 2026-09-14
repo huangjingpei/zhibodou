@@ -5,9 +5,25 @@
 #include <winhttp.h>
 #include <nlohmann/json.hpp>
 
+#include <cstdio>
+#include <ctime>
 #include <vector>
 
 namespace pdk {
+namespace {
+
+std::string client_time_iso8601() {
+    const std::time_t now = std::time(nullptr);
+    std::tm parts{};
+    localtime_s(&parts, &now);
+    char stamp[32];
+    std::snprintf(stamp, sizeof(stamp), "%04d-%02d-%02dT%02d:%02d:%02d",
+                  parts.tm_year + 1900, parts.tm_mon + 1, parts.tm_mday,
+                  parts.tm_hour, parts.tm_min, parts.tm_sec);
+    return stamp;
+}
+
+}  // namespace
 
 void report_event(const UpdateJob& job, const std::string& event_type,
                   const std::string& error_category) noexcept {
@@ -41,6 +57,7 @@ void report_event(const UpdateJob& job, const std::string& event_type,
             {"eventType", event_type}, {"fromVersion", telemetry.from_version},
             {"targetVersion", telemetry.target_version}, {"platform", telemetry.platform},
             {"errorCategory", error_category.empty() ? nlohmann::json(nullptr) : nlohmann::json(error_category)},
+            {"clientTime", client_time_iso8601()},
         };
         const std::string payload = body.dump();
         const std::wstring headers = L"Content-Type: application/json\r\nX-PDK-App-ID: " +

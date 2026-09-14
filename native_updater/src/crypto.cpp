@@ -56,7 +56,8 @@ std::string sha256_file(const std::filesystem::path& path) {
         cleanup();
         throw UpdateError("cannot open package for SHA-256: " + path_to_utf8(path));
     }
-    std::array<char, 1024 * 1024> buffer{};
+    // 注意：不能在栈上放 1MiB 缓冲（默认线程栈仅 1MiB，会栈溢出），必须用堆。
+    std::vector<char> buffer(256 * 1024);
     while (input) {
         input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
         const auto count = input.gcount();
