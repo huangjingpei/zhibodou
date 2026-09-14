@@ -113,11 +113,12 @@ def wait_for_parent(pid: int, timeout: int = 90) -> bool:
 
 
 def _kill_process_tree(root_pid: int) -> None:
-    """递归强杀 root_pid 的整个进程树（含已孤儿化的子孙），释放其占用的文件句柄。
+    """递归强杀 root_pid 的"其他"子孙进程，释放其占用的文件句柄。
 
-    升级器自身（及它的子孙）必须排除，否则会自杀。父进程（主程序）退出后，
-    它派生的子进程（ffmpeg / scrcpy / ADB / OBS 等）往往仍存活并持有 install_root
-    内的文件句柄，导致目录级重命名被 Windows 以 WinError 32（共享冲突）拒绝。
+    升级器自身、其子孙、其祖先链（含 PyInstaller onefile 的 bootloader 引导进程）、
+    以及主程序 root_pid 本身都必须排除，否则会自杀或误杀正在退出的主程序。
+    主程序退出后，它派生的子进程（ffmpeg / scrcpy / ADB / OBS 等）往往仍存活并
+    持有 install_root 内的文件句柄，导致目录级重命名被 Windows 以 WinError 32 拒绝。
     """
     import ctypes
     from ctypes import wintypes
@@ -168,8 +169,25 @@ def _kill_process_tree(root_pid: int) -> None:
                     queue.append(c)
         return out
 
-    protected = descendants(self_pid)  # 升级器自身及其子孙，绝不能杀
-    to_kill = sorted((descendants(root_pid) | {root_pid}) - protected)
+    # 保护集 = 升级器自身 + 其子孙 + 其祖先链。
+    # 注意两个坑：
+    # 1) descendants() 不含起始 PID 本身，必须显式加 self_pid，否则会 TerminateProcess 自己；
+    # 2) PyInstaller --onefile 的升级器是两个进程（bootloader 父 + Python 子），
+    #    bootloader 是主程序的子进程，若不保护祖先链，bootloader 被杀后整个升级器随之死亡。
+    parent_of: dict[int, int] = {}
+    for parent, kids in children.items():
+        for kid in kids:
+            parent_of.setdefault(kid, parent)
+
+    ancestors: set[int] = set()
+    cursor = parent_of.get(self_pid)
+    while cursor and cursor not in ancestors:
+        ancestors.add(cursor)
+        cursor = parent_of.get(cursor)
+
+    protected = descendants(self_pid) | {self_pid} | ancestors
+    # 只清理主程序的"其他"子孙（ffmpeg/scrcpy/ADB/OBS 等），主程序自身退出交给 wait_for_parent
+    to_kill = sorted(descendants(root_pid) - protected)
     killed = 0
     for pid in to_kill:
         try:
