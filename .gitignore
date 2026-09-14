@@ -49,3 +49,13 @@ ffmpeg.exe~
 
 # ---- MediaMTX 本地部署二进制/证书（不进库） ----
 mediamtx-upgrade/
+
+# ---- 升级器 / update_tester 构建产物与测试残留（不入库） ----
+native_updater/build*/
+native_updater/build_*.txt
+native_updater/build_log.txt
+native_updater/stub_client.*
+native_updater/test_*
+update_tester/*.exe
+update_tester/*.obj
+update_tester/build_out.txt
