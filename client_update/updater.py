@@ -21,8 +21,27 @@ from client_update.errors import UpdateError
 from client_update.security import artifact_canonical, verify_ed25519
 
 
+def _log_path() -> Path:
+    env = os.getenv("PDK_UPDATER_LOG")
+    if env:
+        return Path(env)
+    root = Path(os.getenv("LOCALAPPDATA") or Path.home())
+    d = root / "PDK" / "updates"
+    d.mkdir(parents=True, exist_ok=True)
+    return d / f"updater-{datetime.now().strftime('%Y%m%d')}.log"
+
+
+_LOG_PATH = _log_path()
+
+
 def log(message: str) -> None:
-    print(f"[PDK-Updater] {message}", flush=True)
+    line = f"[{datetime.now().isoformat(timespec='seconds')}] [PDK-Updater] {message}"
+    print(line, flush=True)
+    try:
+        with _LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
 
 
 def fail(message: str, code: int = 2) -> None:
@@ -205,11 +224,14 @@ def rollback(install_root: Path, backup: Path, failed_root: Path,
 
 
 def install(args: argparse.Namespace) -> int:
+    log(f"开始安装：install_root={args.install_root} target={args.version} parent_pid={args.parent_pid}")
     try:
         verify_package(args)
     except UpdateError as exc:
         report("INSTALL_FAILED", "SIGNATURE_INVALID")
+        log("验签/校验失败：" + str(exc))
         fail(str(exc))
+    log("验签通过，等待父进程退出")
     if not wait_for_parent(args.parent_pid):
         report("INSTALL_FAILED", "MAIN_PROCESS_NOT_EXITED")
         fail("主程序未在 90 秒内退出，安装尚未执行")
@@ -226,12 +248,19 @@ def install(args: argparse.Namespace) -> int:
         safe_extract(Path(args.package), stage, args)
         if not stage.joinpath(*PurePosixPath(args.entry_point).parts).is_file():
             fail("安全解压后找不到新版入口")
-        install_root.replace(backup)
+        log(f"解压完成，准备原子替换 install_root={install_root}")
+        try:
+            install_root.replace(backup)
+        except OSError as exc:
+            log(f"备份失败（install_root.replace）：{exc}")
+            raise
         try:
             stage.replace(install_root)
-        except Exception:
+        except Exception as exc:
+            log(f"切换失败（stage.replace）：{exc}")
             backup.replace(install_root)
             raise
+        log("目录已切换到新版本，启动新版入口做健康检查")
         process = launch_entry(install_root, args.entry_point, health_file, args.health_nonce)
         deadline = time.time() + args.health_timeout
         while time.time() < deadline and process.poll() is None:
@@ -248,12 +277,15 @@ def install(args: argparse.Namespace) -> int:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
+        log(f"健康检查未在 {args.health_timeout}s 内通过，准备回滚")
         rollback(install_root, backup, failed_root, args.entry_point)
         report("INSTALL_FAILED", "HEALTH_CHECK_FAILED")
         fail("新版未通过启动健康检查，已自动恢复旧版本", 3)
     except SystemExit:
         raise
     except (Exception, UpdateError) as exc:
+        import traceback
+        log("安装异常：" + "".join(traceback.format_exception_only(type(exc), exc)).strip())
         report("INSTALL_FAILED", "INSTALL_EXCEPTION")
         if backup.exists() and not install_root.exists():
             backup.replace(install_root)
@@ -275,4 +307,12 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    raise SystemExit(install(parse_args()))
+    try:
+        raise SystemExit(install(parse_args()))
+    except SystemExit:
+        raise
+    except Exception as exc:  # noqa: BLE001 — 兜底记录到日志，避免无控制台时静默消失
+        log("未捕获异常：" + repr(exc))
+        import traceback
+        log(traceback.format_exc())
+        raise
