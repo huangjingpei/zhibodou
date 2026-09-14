@@ -11,7 +11,7 @@
   "arch": "X64",
   "entryPoint": "zhibodou.exe",
   "updaterExecutable": "zhibodou_updater.exe",
-  "serverBaseUrl": "http://127.0.0.1:8080",
+  "serverBaseUrl": "https://pdk.graddu.com",
   "healthTimeoutSeconds": 45,
   "artifactPublicKeys": {
     "client-release-2026-01": "MCowBQYDK2VwAyEAdkohm7YO9wdg+R0VG7wBKaCFcku9oTQuo6iZU3cXQQM="
