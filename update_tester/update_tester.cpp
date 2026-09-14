@@ -363,12 +363,16 @@ std::string common_headers(const Config& cfg, const std::string& device_id) {
 
 std::string sha256_file_hex(const std::filesystem::path& path) {
     BCRYPT_ALG_HANDLE alg = nullptr;
-    if (BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return {};
+    NTSTATUS st = BCryptOpenAlgorithmProvider(&alg, BCRYPT_SHA256_ALGORITHM, nullptr, 0);
+    if (st < 0) { printf("[调试] BCryptOpenAlgorithmProvider 失败: 0x%08lX\n", (unsigned long)st); return {}; }
+    DWORD hash_len = 0, obj_len = 0, cb = 0;
+    BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, (PUCHAR)&hash_len, sizeof(hash_len), &cb, 0);
+    BCryptGetProperty(alg, BCRYPT_OBJECT_LENGTH, (PUCHAR)&obj_len, sizeof(obj_len), &cb, 0);
     BCRYPT_HASH_HANDLE hash = nullptr;
-    DWORD hash_len = 0, done = 0, cb = sizeof(DWORD);
-    BCryptGetProperty(alg, BCRYPT_HASH_LENGTH, (PUCHAR)&hash_len, sizeof(hash_len), &done, 0);
-    std::vector<BYTE> hash_obj(hash_len * 4);
-    if (BCryptCreateHash(alg, &hash, hash_obj.data(), (ULONG)hash_obj.size(), nullptr, 0, 0) < 0) {
+    std::vector<BYTE> hash_obj(obj_len);
+    st = BCryptCreateHash(alg, &hash, hash_obj.data(), (ULONG)hash_obj.size(), nullptr, 0, 0);
+    if (st < 0) {
+        printf("[调试] BCryptCreateHash 失败: 0x%08lX (obj_len=%lu)\n", (unsigned long)st, (unsigned long)obj_len);
         BCryptCloseAlgorithmProvider(alg, 0);
         return {};
     }
@@ -380,9 +384,10 @@ std::string sha256_file_hex(const std::filesystem::path& path) {
         if (n > 0) BCryptHashData(hash, (PUCHAR)buffer.data(), (ULONG)n, 0);
     }
     std::vector<BYTE> digest(hash_len);
-    BCryptFinishHash(hash, digest.data(), hash_len, 0);
+    st = BCryptFinishHash(hash, digest.data(), hash_len, 0);
     BCryptDestroyHash(hash);
     BCryptCloseAlgorithmProvider(alg, 0);
+    if (st < 0) { printf("[调试] BCryptFinishHash 失败: 0x%08lX\n", (unsigned long)st); return {}; }
     static const char* hexd = "0123456789abcdef";
     std::string hex(hash_len * 2, '0');
     for (DWORD i = 0; i < hash_len; ++i) {
