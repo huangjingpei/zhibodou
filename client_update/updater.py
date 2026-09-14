@@ -199,6 +199,71 @@ def _robust_replace(src: Path, dst: Path, label: str, tries: int = 6) -> None:
     raise last
 
 
+def _iter_files(root: Path):
+    if not root.is_dir():
+        return
+    for path in root.rglob("*"):
+        if path.is_file() or path.is_symlink():
+            yield path
+
+
+def _sync_tree(src: Path, dst: Path, label: str) -> int:
+    """逐文件把 src 同步到 dst：覆盖同名文件、删除 dst 独有的旧文件。
+
+    目录级重命名被外部进程（资源管理器窗口 / IDE 文件监视 / 终端 CWD 等）
+    占用而无法进行时，用它就地升级 —— 这类持有者通常只锁目录句柄，
+    不锁其中单个文件。单个文件被占用时抛出带具体文件名的 UpdateError，
+    便于直接定位残留进程。
+    """
+    src_files = {p.relative_to(src).as_posix(): p for p in _iter_files(src)}
+    if not src_files:
+        raise UpdateError(f"{label}：新版本目录为空")
+    for rel, src_path in sorted(src_files.items()):
+        dest = dst.joinpath(*PurePosixPath(rel).parts)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(src_path, dest)
+        except OSError as exc:
+            raise UpdateError(f"{label}：无法写入 {rel}（文件被占用，"
+                              f"请关闭正在使用它的程序后重试）：{exc}") from exc
+    removed = 0
+    for path in list(_iter_files(dst)):
+        rel = path.relative_to(dst).as_posix()
+        if rel not in src_files:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                pass  # 旧残留文件删除失败不影响升级
+    return len(src_files) + removed
+
+
+def _switch_to_new_version(install_root: Path, stage: Path, backup: Path) -> str:
+    """优先目录级原子替换；目录被外部进程占用时退化为逐文件就地同步。
+
+    返回实际使用的策略："atomic" 或 "inplace"。
+    """
+    try:
+        _robust_replace(install_root, backup, "原子替换失败（install_root.replace）", tries=3)
+    except OSError as exc:
+        log(f"目录被占用，无法原子替换（{exc}），改用逐文件就地同步")
+        shutil.rmtree(backup, ignore_errors=True)
+        backup.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(install_root, backup, dirs_exist_ok=True)
+        try:
+            _sync_tree(stage, install_root, "就地升级")
+        except UpdateError:
+            # 同步中途失败（个别文件被占用）：用备份恢复已覆盖的文件后向上抛
+            try:
+                _sync_tree(backup, install_root, "就地升级失败回滚")
+            except Exception:
+                pass
+            raise
+        return "inplace"
+    _robust_replace(stage, install_root, "切换失败（stage.replace）", tries=3)
+    return "atomic"
+
+
 def verify_package(args: argparse.Namespace) -> None:
     package = Path(args.package)
     if not package.is_file() or package.stat().st_size != args.file_size:
@@ -297,11 +362,14 @@ def healthy(path: Path, nonce: str, version: str) -> bool:
 
 
 def rollback(install_root: Path, backup: Path, failed_root: Path,
-             entry_point: str) -> None:
+             entry_point: str, inplace: bool = False) -> None:
     try:
-        if install_root.exists():
-            _robust_replace(install_root, failed_root, "回滚：当前版本移入 failed", tries=3)
-        _robust_replace(backup, install_root, "回滚：备份恢复为当前版本", tries=3)
+        if inplace:
+            _sync_tree(backup, install_root, "回滚")
+        else:
+            if install_root.exists():
+                _robust_replace(install_root, failed_root, "回滚：当前版本移入 failed", tries=3)
+            _robust_replace(backup, install_root, "回滚：备份恢复为当前版本", tries=3)
         old_entry = install_root.joinpath(*PurePosixPath(entry_point).parts)
         if old_entry.is_file():
             subprocess.Popen([str(old_entry)], cwd=install_root,
@@ -318,12 +386,13 @@ def install(args: argparse.Namespace) -> int:
         report("INSTALL_FAILED", "SIGNATURE_INVALID")
         log("验签/校验失败：" + str(exc))
         fail(str(exc))
-        log("验签通过，清理父进程及其子进程占用后等待父进程退出")
-        _kill_process_tree(args.parent_pid)
-        time.sleep(0.3)  # 给 Windows 一点时间释放句柄
-        if not wait_for_parent(args.parent_pid):
-            report("INSTALL_FAILED", "MAIN_PROCESS_NOT_EXITED")
-            fail("主程序未在 90 秒内退出，安装尚未执行")
+
+    log("验签通过，清理父进程及其子进程占用后等待父进程退出")
+    _kill_process_tree(args.parent_pid)
+    time.sleep(0.3)  # 给 Windows 一点时间释放句柄
+    if not wait_for_parent(args.parent_pid):
+        report("INSTALL_FAILED", "MAIN_PROCESS_NOT_EXITED")
+        fail("主程序未在 90 秒内退出，安装尚未执行")
 
     install_root = Path(args.install_root).resolve()
     parent = install_root.parent
@@ -337,23 +406,9 @@ def install(args: argparse.Namespace) -> int:
         safe_extract(Path(args.package), stage, args)
         if not stage.joinpath(*PurePosixPath(args.entry_point).parts).is_file():
             fail("安全解压后找不到新版入口")
-        log(f"解压完成，准备原子替换 install_root={install_root}")
-        try:
-            _robust_replace(install_root, backup, "备份失败（install_root.replace）")
-        except OSError as exc:
-            report("INSTALL_FAILED", "BACKUP_LOCKED")
-            fail(f"无法备份当前版本（目录被占用，WinError 32）：{exc}。"
-                 f"请关闭所有可能正在使用该目录的程序（文件资源管理器窗口、媒体/推流子进程等）后重试。", 5)
-        try:
-            _robust_replace(stage, install_root, "切换失败（stage.replace）")
-        except Exception as exc:
-            log(f"切换失败（stage.replace）：{exc}")
-            try:
-                _robust_replace(backup, install_root, "回滚失败（backup.replace）", tries=2)
-            except Exception:
-                pass
-            raise
-        log("目录已切换到新版本，启动新版入口做健康检查")
+        log(f"解压完成，准备替换 install_root={install_root}")
+        strategy = _switch_to_new_version(install_root, stage, backup)
+        log(f"版本替换完成（策略={strategy}），启动新版入口做健康检查")
         process = launch_entry(install_root, args.entry_point, health_file, args.health_nonce)
         deadline = time.time() + args.health_timeout
         while time.time() < deadline and process.poll() is None:
@@ -371,7 +426,7 @@ def install(args: argparse.Namespace) -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
         log(f"健康检查未在 {args.health_timeout}s 内通过，准备回滚")
-        rollback(install_root, backup, failed_root, args.entry_point)
+        rollback(install_root, backup, failed_root, args.entry_point, strategy == "inplace")
         report("INSTALL_FAILED", "HEALTH_CHECK_FAILED")
         fail("新版未通过启动健康检查，已自动恢复旧版本", 3)
     except SystemExit:
@@ -380,11 +435,14 @@ def install(args: argparse.Namespace) -> int:
         import traceback
         log("安装异常：" + "".join(traceback.format_exception_only(type(exc), exc)).strip())
         report("INSTALL_FAILED", "INSTALL_EXCEPTION")
-        if backup.exists() and not install_root.exists():
-            try:
-                _robust_replace(backup, install_root, "异常回滚（backup.replace）", tries=3)
-            except Exception:
-                pass
+        try:
+            if backup.exists() and any(backup.iterdir()):
+                # 备份里有旧版本内容：无论原子替换走到哪一步，就地恢复最稳妥
+                _sync_tree(backup, install_root, "异常回滚")
+            elif backup.exists() and not install_root.exists():
+                _robust_replace(backup, install_root, "异常回滚", tries=3)
+        except Exception:
+            pass
         fail(str(exc), 4)
     finally:
         shutil.rmtree(stage, ignore_errors=True)
