@@ -56,6 +56,26 @@ class _LogoutWorker(QThread):
             self.failed.emit(exc)
 
 
+class _NotificationWorker(QThread):
+    """后台拉取服务端通知列表，避免主线程网络等待。"""
+
+    fetched = pyqtSignal(object)
+
+    def __init__(self, base_url: str, app_id: int, current_version: str):
+        super().__init__()
+        self.base_url = base_url
+        self.app_id = app_id
+        self.current_version = current_version
+
+    def run(self):
+        try:
+            from pdk.notifications import fetch_notifications
+            items = fetch_notifications(self.base_url, self.app_id, self.current_version)
+            self.fetched.emit(items)
+        except Exception:
+            self.fetched.emit([])
+
+
 class MainWin(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -73,6 +93,12 @@ class MainWin(QMainWindow):
 
         self.host_stream = HostStream()
         self.client_stream = ClientStream()
+
+        # 客户端通知与升级公告持久化管理器 (默认 appId=3)
+        from pdk.notifications import NotificationLocalStore, resolve_pdk_server_endpoint
+        _, default_app_id = resolve_pdk_server_endpoint()
+        self.notice_store = NotificationLocalStore(app_id=default_app_id)
+        self._notice_worker = None
 
         # 预览定时器须先于面板创建：HostPanel.__init__ 会持有它
         self.timer = QTimer(self)
@@ -99,6 +125,7 @@ class MainWin(QMainWindow):
         self.init_ui()
         self.session_timer.start()
         QTimer.singleShot(0, self._start_session_check)
+        QTimer.singleShot(1000, lambda: self._check_notifications(force=False))
 
     def init_ui(self):
         central = QWidget()
@@ -140,6 +167,54 @@ class MainWin(QMainWindow):
         self.lab_account.setStyleSheet(theme.label_style(theme.FS_SMALL, theme.TEXT_MUTED))
         lay.addWidget(self.lab_account)
 
+        # 通知铃铛按钮容器（支持左上角浮动红点角标 +1 / +2）
+        self.notice_box = QWidget()
+        self.notice_box.setFixedHeight(36)
+        notice_lay = QHBoxLayout(self.notice_box)
+        notice_lay.setContentsMargins(6, 4, 4, 2)
+        notice_lay.setSpacing(0)
+
+        self.btn_notice = QPushButton("🔔 通知公告")
+        self.btn_notice.setProperty("ghost", True)
+        self.btn_notice.setFixedHeight(30)
+        self.btn_notice.setCursor(Qt.PointingHandCursor)
+        self.btn_notice.setStyleSheet(f"""
+            QPushButton {{
+                color: {theme.TEXT_SOFT};
+                background: transparent;
+                border: 1px solid {theme.BORDER};
+                border-radius: 6px;
+                padding: 0 10px;
+                font-size: {theme.FS_SMALL}pt;
+            }}
+            QPushButton:hover {{
+                color: {theme.TEXT};
+                border-color: {theme.PRIMARY};
+                background-color: {theme.SURFACE_ALT};
+            }}
+        """)
+        self.btn_notice.clicked.connect(lambda: self.show_notifications_dialog(force=True))
+        notice_lay.addWidget(self.btn_notice)
+
+        # 浮动在按钮左上角的红色未读数角标 (+1 / +2 ...)
+        self.lab_notice_badge = QLabel("", self.notice_box)
+        self.lab_notice_badge.setStyleSheet(f"""
+            QLabel {{
+                background-color: #ef4444;
+                color: #ffffff;
+                border: 1.5px solid {theme.BG_ELEVATED};
+                border-radius: 8px;
+                padding: 0 4px;
+                font-size: 9px;
+                font-weight: bold;
+                min-height: 16px;
+            }}
+        """)
+        self.lab_notice_badge.setAlignment(Qt.AlignCenter)
+        self.lab_notice_badge.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.lab_notice_badge.hide()
+        lay.addWidget(self.notice_box)
+
         self.btn_logout = QPushButton("退出登录")
         self.btn_logout.setProperty("ghost", True)
         self.btn_logout.setFixedHeight(30)
@@ -157,6 +232,72 @@ class MainWin(QMainWindow):
                 self.lab_account.setText("当前账号：%s" % result.masked_phone)
                 return
         self.lab_account.setText("未登录")
+
+    # ------------------------------------------------------------ 系统通知与升级公告
+    def _refresh_notice_badge(self):
+        """根据本地已读状态刷新通知按钮左上角的红点角标 (+1 / +2 等)。"""
+        unread = self.notice_store.get_unread_count()
+        if unread > 0:
+            text = f"+{unread}" if unread <= 99 else "+99"
+            self.lab_notice_badge.setText(text)
+            self.lab_notice_badge.adjustSize()
+            self.lab_notice_badge.move(0, 0)
+            self.lab_notice_badge.raise_()
+            self.lab_notice_badge.show()
+        else:
+            self.lab_notice_badge.setText("")
+            self.lab_notice_badge.hide()
+
+    def _check_notifications(self, force=False):
+        """检查并拉取服务端通知；如果满足 24h 周期或 force 则执行网络请求。"""
+        if not force and not self.notice_store.should_fetch(interval_seconds=86400):
+            # 未满 24 小时，直接根据本地已缓存数据渲染红点
+            self._refresh_notice_badge()
+            return
+
+        if self._notice_worker is not None and self._notice_worker.isRunning():
+            return
+
+        from core.config import APP_VERSION
+        from pdk.notifications import resolve_pdk_server_endpoint
+        base_url, app_id = resolve_pdk_server_endpoint()
+        if pdk_auth is not None and pdk_auth.current_client() is not None:
+            c = pdk_auth.current_client()
+            base_url, app_id = c.base_url, c.app_id
+
+        self._notice_worker = _NotificationWorker(base_url, app_id, APP_VERSION)
+        self._notice_worker.fetched.connect(self._on_notifications_fetched)
+        self._notice_worker.start()
+
+    def _on_notifications_fetched(self, items):
+        if isinstance(items, list):
+            self.notice_store.save_fetched(items)
+        self._refresh_notice_badge()
+
+        # 强弹窗检查：若存在未读且 isPopup=1 的通知或升级，自动弹窗
+        unreads = self.notice_store.get_unread_popups()
+        if unreads:
+            self.show_notifications_dialog(force=False)
+
+    def show_notifications_dialog(self, force=False):
+        """弹出通知与升级公告对话框。"""
+        from ui.notification_dialog import NotificationDialog
+
+        if force:
+            from core.config import APP_VERSION
+            from pdk.notifications import fetch_notifications, resolve_pdk_server_endpoint
+            base_url, app_id = resolve_pdk_server_endpoint()
+            if pdk_auth is not None and pdk_auth.current_client() is not None:
+                c = pdk_auth.current_client()
+                base_url, app_id = c.base_url, c.app_id
+            items = fetch_notifications(base_url, app_id, APP_VERSION, timeout=4)
+            if items:
+                self.notice_store.save_fetched(items)
+
+        dlg = NotificationDialog(self, self.notice_store, on_read_changed=self._refresh_notice_badge)
+        dlg.exec_()
+        self.notice_store.mark_all_as_read()
+        self._refresh_notice_badge()
 
     def _request_logout(self):
         """优雅注销后返回登录窗口。"""

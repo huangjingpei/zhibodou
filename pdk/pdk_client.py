@@ -66,6 +66,7 @@ _EXPECTATIONS: dict[tuple[str, str], str] = {
     ("POST", "/api/v1/client/device-license/unbind"): "code=200，当前许可证解绑并使当前会话失效",
     ("POST", "/api/v1/client/zhibo-live/publish-tickets"): "code=200，返回短效 publishUrl；严禁记录完整 URL",
     ("GET", "/api/v1/client/zhibo-live/streams/current"): "code=200，返回当前许可证自己的直播会话",
+    ("GET", "/api/v1/client/notifications"): "code=200，返回当前 appId 下生效的通知与版本升级公告列表",
 }
 
 _ACTION_BY_CODE: dict[int, str] = {
@@ -727,6 +728,23 @@ class PdkClient:
                              f"/api/v1/client/zhibo-live/streams/{session_no}/stop",
                              authenticated=True)
         return str(data)
+
+    # --------------------------------------------------------------- 客户端通知与升级公告
+    def notifications(self, *, app_id: Optional[int] = None, current_version: str = "") -> list[dict[str, Any]]:
+        """拉取当前 appId 的有效通知列表（含版本升级公告、常规公告与系统维护）。"""
+        aid = app_id if app_id is not None else self.app_id
+        params: dict[str, Any] = {"appId": aid}
+        if current_version:
+            params["currentVersion"] = current_version
+        data = self._request("GET", "/api/v1/client/notifications", params=params, authenticated=False)
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            if isinstance(data.get("list"), list):
+                return data["list"]
+            if isinstance(data.get("records"), list):
+                return data["records"]
+        return []
 
 
 def _demo() -> None:
